@@ -9,14 +9,19 @@ const SIZE_COUNT: usize = 11;
 
 const BOX_WIDTH: f32 = 4.4;
 const BOX_HEIGHT: f32 = 5.0;
+const TOP_OFFSET: f32 = -0.8;
+
+const DEATH_LINE: f32 = TOP_OFFSET + BOX_HEIGHT / 2.0;
+const OVERTOP_TIMER: f32 = 3.0;
 
 const MAX_RADIUS: f32 = (BOX_WIDTH / 2.2) / 2.0;
 const MIN_RADIUS: f32 = 0.15;
 
-const LINEAR_DAMPING: f32 = 10.0;
-const FRICTION: f32 = 1.0;
+const LINEAR_DAMPING: f32 = 3.0;
+const FRICTION: f32 = 0.7;
+const RESTITUTION: f32 = 0.7;
 
-const G: f32 = 90.0;
+const G: f32 = 70.0;
 
 fn main() {
     App::new()
@@ -34,9 +39,12 @@ fn main() {
                     merge_on_collision,
                     enter_splash,
                     update_score,
+                    check_over_top,
+                    enter_gameover,
                 )
                     .run_if(in_state(GameState::Running)),
                 enter_running.run_if(in_state(GameState::Splash)),
+                enter_running.run_if(in_state(GameState::GameOver)),
             ),
         )
         .add_systems(OnEnter(GameState::Splash), build_splash)
@@ -54,6 +62,7 @@ fn main() {
         .init_resource::<CursorWorldPos>()
         .init_resource::<NextBallSize>()
         .init_resource::<Score>()
+        .init_resource::<Multiplier>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
         .add_state::<AppState>()
         .add_state::<GameState>()
@@ -97,6 +106,12 @@ fn enter_splash(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<Game
     }
 }
 
+fn enter_gameover(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<GameState>>) {
+    if keys.just_pressed(KeyCode::G) {
+        next_state.0 = Some(GameState::GameOver)
+    }
+}
+
 #[derive(Resource)]
 struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
 
@@ -128,7 +143,37 @@ fn ease_in_sine(t: f32) -> f32 {
 #[derive(Component)]
 struct ScoreTag;
 
-fn build_splash() {}
+fn build_splash(mut commands: Commands) {
+    let style = TextStyle {
+        font_size: 30.0,
+        ..default()
+    };
+
+    commands
+        .spawn(
+            TextBundle::from_sections([
+                TextSection {
+                    value: "SuikaClone!\n\n\n\n".into(),
+                    style: TextStyle {
+                        font_size: 40.0,
+                        ..default()
+                    },
+                },
+                TextSection {
+                    value: "Space to start\nEsc to quit\nMouse to aim\nClick to drop".into(),
+                    style,
+                },
+            ])
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Px(50.0),
+                left: Val::Px(130.0),
+                ..default()
+            })
+            .with_text_alignment(TextAlignment::Center),
+        )
+        .insert(SplashTag);
+}
 
 fn build_running(mut score: ResMut<Score>, mut commands: Commands) {
     score.0 = 0;
@@ -143,6 +188,7 @@ fn build_running(mut score: ResMut<Score>, mut commands: Commands) {
                 },
             )
             .with_style(Style {
+                position_type: PositionType::Absolute,
                 left: Val::Px(5.0),
                 top: Val::Px(5.0),
                 ..default()
@@ -161,7 +207,49 @@ fn update_score(score: Res<Score>, mut ui_q: Query<&mut Text, With<ScoreTag>>) {
     }
 }
 
-fn build_gameover() {}
+fn build_gameover(score: Res<Score>, mut commands: Commands) {
+    let score_string = format!("Score: {}", score.0);
+
+    let style = TextStyle {
+        font_size: 30.0,
+        ..default()
+    };
+
+    commands
+        .spawn(
+            TextBundle::from_sections([
+                TextSection {
+                    value: "Skill Issue\n".into(),
+                    style: style.clone(),
+                },
+                TextSection {
+                    value: score_string,
+                    style: style.clone(),
+                },
+                TextSection {
+                    value: "\n\nSpace to Restart".into(),
+                    style: TextStyle {
+                        font_size: 25.0,
+                        ..default()
+                    },
+                },
+            ])
+            .with_style(Style {
+                // how much can i be arsed with bevy's flexbox bits
+                // every time i try it's a nightmare
+                // i don't know why, every other part of the engine
+                // feels super intuitive. but layout is a pain point.
+                // could be wrong, i can't stand the most popular
+                // js framework either.
+                position_type: PositionType::Absolute,
+                top: Val::Px(50.0),
+                left: Val::Px(150.0),
+                ..default()
+            })
+            .with_text_alignment(TextAlignment::Center),
+        )
+        .insert(GameOverTag);
+}
 
 fn setup(
     mut commands: Commands,
@@ -212,13 +300,12 @@ fn add_walls(mut commands: Commands) {
     };
 
     let wall_thickness = 1.0;
-    let top_offset = -0.8;
 
     // floor
     commands.spawn((
         RigidBody::Static,
         Collider::cuboid(BOX_WIDTH + wall_thickness, wall_thickness),
-        Position(Vec2::new(0.0, top_offset - BOX_HEIGHT / 2.0)),
+        Position(Vec2::new(0.0, TOP_OFFSET - BOX_HEIGHT / 2.0)),
         SpriteBundle {
             sprite: square_sprite.clone(),
             transform: Transform::from_scale(Vec3::new(
@@ -234,8 +321,8 @@ fn add_walls(mut commands: Commands) {
     // left
     commands.spawn((
         RigidBody::Static,
-        Collider::cuboid(wall_thickness, BOX_HEIGHT),
-        Position(Vec2::new(-BOX_WIDTH / 2.0, top_offset)),
+        Collider::cuboid(wall_thickness, BOX_HEIGHT * 100.0), // walls are actually very tall, visually not
+        Position(Vec2::new(-BOX_WIDTH / 2.0, TOP_OFFSET)),
         SpriteBundle {
             sprite: square_sprite.clone(),
             transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
@@ -247,11 +334,28 @@ fn add_walls(mut commands: Commands) {
     // right
     commands.spawn((
         RigidBody::Static,
-        Collider::cuboid(wall_thickness, BOX_HEIGHT),
-        Position(Vec2::new(BOX_WIDTH / 2.0, top_offset)),
+        Collider::cuboid(wall_thickness, BOX_HEIGHT * 100.0),
+        Position(Vec2::new(BOX_WIDTH / 2.0, TOP_OFFSET)),
         SpriteBundle {
             sprite: square_sprite.clone(),
             transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
+            ..default()
+        },
+        RunningTag,
+    ));
+
+    // roof (invisible, offscreen, saves from scammy explosion gameovers)
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cuboid(BOX_WIDTH + wall_thickness, wall_thickness),
+        Position(Vec2::new(0.0, 6.0)),
+        SpriteBundle {
+            sprite: square_sprite.clone(),
+            transform: Transform::from_scale(Vec3::new(
+                BOX_WIDTH + wall_thickness,
+                wall_thickness,
+                1.0,
+            )),
             ..default()
         },
         RunningTag,
@@ -284,10 +388,13 @@ fn release_ball(
     ball_sizes: Res<BallSizes>,
     mut next_ball_state: ResMut<NextState<NextBallState>>,
     next_ball_size: Res<NextBallSize>,
+    mut multiplier: ResMut<Multiplier>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) || fake_ball_q.is_empty() {
         return;
     }
+
+    multiplier.0 = 0;
 
     next_ball_timer.0.reset();
 
@@ -357,18 +464,21 @@ fn cursor_to_world(
     }
 }
 
+#[derive(Resource, Default)]
+struct Multiplier(usize);
+
 fn merge_on_collision(
     mut collision_event_reader: EventReader<Collision>,
     ballsize_q: Query<(&BallSize, &Position, &LinearVelocity, &AngularVelocity)>,
     mut commands: Commands,
     ball_sizes: Res<BallSizes>,
     mut score: ResMut<Score>,
+    mut multiplier: ResMut<Multiplier>,
 ) {
     for Collision(contact) in collision_event_reader.iter() {
         // Check BallSize component on entities. If present and equal, remove the two contacting
         // entities and spawn a ball with the next size at the midpoint of the contacting ball's
         // positions.
-        //println!("{:?} + {:?} contacting", contact.entity1, contact.entity2);
         let entity1 = contact.entity1;
         let entity2 = contact.entity2;
 
@@ -381,7 +491,11 @@ fn merge_on_collision(
                         continue;
                     }
 
-                    score.0 += size;
+                    multiplier.0 += 1;
+
+                    println!("Multiplier: {}", multiplier.0);
+
+                    score.0 += size * multiplier.0;
 
                     // Magic numbers to stop insane velocities
                     let _lv = (lv1.0 + lv2.0) / 10.0;
@@ -418,6 +532,8 @@ fn new_ball(
     BallSize,
     Friction,
     RunningTag,
+    SettleTimer,
+    Restitution,
 ) {
     let radius = ball_sizes.0[size].0;
     let matmesh = MaterialMesh2dBundle {
@@ -434,6 +550,8 @@ fn new_ball(
         BallSize(size),
         Friction::new(FRICTION),
         RunningTag,
+        SettleTimer(Timer::from_seconds(OVERTOP_TIMER, TimerMode::Once)),
+        Restitution::new(RESTITUTION),
     )
 }
 
@@ -453,9 +571,32 @@ fn set_next_size(
 ) {
     let mut rng = rand::thread_rng();
     let x: usize = rng.gen_range(0..SIZE_COUNT / 2);
+    //let x = 10;
     next_size.0 = x;
     next_state.0 = Some(NextBallState::Selected);
 }
 
 #[derive(Resource, Default)]
 struct Score(usize);
+
+#[derive(Component)]
+struct SettleTimer(Timer);
+
+fn check_over_top(
+    mut ball_q: Query<(&Position, &mut SettleTimer, &BallSize)>,
+    ball_sizes: Res<BallSizes>,
+    time: Res<Time>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    for (pos, mut timer, size) in ball_q.iter_mut() {
+        let ball_top = pos.y + ball_sizes.0[size.0].0;
+        if ball_top > DEATH_LINE {
+            timer.0.tick(time.delta());
+            if timer.0.finished() {
+                next_state.0 = Some(GameState::GameOver);
+            }
+        } else {
+            timer.0.reset();
+        }
+    }
+}

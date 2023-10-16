@@ -5,7 +5,7 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
         .insert_resource(Gravity(Vec2::NEG_Y * 9.81))
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, add_walls))
         .add_systems(Update, (track_ball_position, play))
         .add_systems(OnEnter(AppState::Running), resume)
         .add_systems(OnExit(AppState::Running), pause)
@@ -73,6 +73,54 @@ fn setup(
             ..default()
         },
         Position(Vec2::new(0., 2.)),
+    ));
+}
+
+fn add_walls(mut commands: Commands) {
+    let square_sprite = Sprite {
+        color: Color::rgb_u8(200, 200, 200),
+        custom_size: Some(Vec2::splat(1.0)),
+        ..default()
+    };
+
+    let floor_width = 3.0;
+    let wall_thickness = 0.1;
+    let wall_height = 5.0 + wall_thickness;
+
+    // floor
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cuboid(floor_width, wall_thickness),
+        Position(Vec2::new(0.0, -2.5)),
+        SpriteBundle {
+            sprite: square_sprite.clone(),
+            transform: Transform::from_scale(Vec3::new(floor_width, wall_thickness, 1.0)),
+            ..default()
+        },
+    ));
+
+    // left
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cuboid(wall_thickness, wall_height),
+        Position(Vec2::new(-floor_width / 2.0, 0.0)),
+        SpriteBundle {
+            sprite: square_sprite.clone(),
+            transform: Transform::from_scale(Vec3::new(wall_thickness, wall_height, 1.0)),
+            ..default()
+        },
+    ));
+
+    // right
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cuboid(wall_thickness, wall_height),
+        Position(Vec2::new(floor_width / 2.0, 0.0)),
+        SpriteBundle {
+            sprite: square_sprite.clone(),
+            transform: Transform::from_scale(Vec3::new(wall_thickness, wall_height, 1.0)),
+            ..default()
+        },
     ));
 }
 

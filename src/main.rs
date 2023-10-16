@@ -22,23 +22,38 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
         .insert_resource(Gravity(Vec2::NEG_Y * G))
-        .add_systems(Startup, (setup, add_walls))
+        .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
-                play,
-                fake_ball_follow_mouse,
-                cursor_to_world,
-                release_ball,
-                tick_next_ball,
-                merge_on_collision,
+                (
+                    fake_ball_follow_mouse,
+                    cursor_to_world,
+                    release_ball,
+                    tick_next_ball,
+                    merge_on_collision,
+                    enter_splash,
+                    update_score,
+                )
+                    .run_if(in_state(GameState::Running)),
+                enter_running.run_if(in_state(GameState::Splash)),
             ),
         )
+        .add_systems(OnEnter(GameState::Splash), build_splash)
+        .add_systems(OnExit(GameState::Splash), despawn_with::<SplashTag>)
+        .add_systems(
+            OnEnter(GameState::Running),
+            (build_running, add_walls, set_next_size),
+        )
+        .add_systems(OnExit(GameState::Running), despawn_with::<RunningTag>)
+        .add_systems(OnEnter(GameState::GameOver), build_gameover)
+        .add_systems(OnExit(GameState::GameOver), despawn_with::<GameOverTag>)
         .add_systems(OnEnter(NextBallState::Pick), set_next_size)
         .add_systems(OnEnter(AppState::Running), resume)
         .add_systems(OnExit(AppState::Running), pause)
         .init_resource::<CursorWorldPos>()
         .init_resource::<NextBallSize>()
+        .init_resource::<Score>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
         .add_state::<AppState>()
         .add_state::<GameState>()
@@ -48,8 +63,8 @@ fn main() {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, States, Default)]
 enum AppState {
-    #[default]
     Paused,
+    #[default]
     Running,
 }
 
@@ -61,9 +76,24 @@ enum GameState {
     GameOver,
 }
 
-fn play(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<AppState>>) {
+#[derive(Component)]
+struct SplashTag;
+
+#[derive(Component)]
+struct RunningTag;
+
+#[derive(Component)]
+struct GameOverTag;
+
+fn enter_running(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<GameState>>) {
     if keys.just_pressed(KeyCode::Space) {
-        next_state.0 = Some(AppState::Running)
+        next_state.0 = Some(GameState::Running)
+    }
+}
+
+fn enter_splash(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<GameState>>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        next_state.0 = Some(GameState::Splash)
     }
 }
 
@@ -72,6 +102,12 @@ struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
 
 #[derive(Component)]
 struct BallSize(usize);
+
+fn despawn_with<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
+    for e in q.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+}
 
 fn lerp(v0: f32, v1: f32, t: f32) -> f32 {
     v0 + t * (v1 - v0)
@@ -89,15 +125,50 @@ fn ease_in_sine(t: f32) -> f32 {
     1.0 - ((t * PI) / 2.0).cos()
 }
 
+#[derive(Component)]
+struct ScoreTag;
+
+fn build_splash() {}
+
+fn build_running(mut score: ResMut<Score>, mut commands: Commands) {
+    score.0 = 0;
+
+    commands
+        .spawn(
+            TextBundle::from_section(
+                "Score: 0",
+                TextStyle {
+                    font_size: 30.0,
+                    ..default()
+                },
+            )
+            .with_style(Style {
+                left: Val::Px(5.0),
+                top: Val::Px(5.0),
+                ..default()
+            }),
+        )
+        .insert((ScoreTag, RunningTag));
+}
+
+fn update_score(score: Res<Score>, mut ui_q: Query<&mut Text, With<ScoreTag>>) {
+    if !score.is_changed() {
+        return;
+    }
+
+    if let Ok(mut text) = ui_q.get_single_mut() {
+        text.sections[0].value = format!("Score: {}", score.0);
+    }
+}
+
+fn build_gameover() {}
+
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut window_q: Query<&mut Window>,
-    mut physics_loop: ResMut<PhysicsLoop>,
 ) {
-    physics_loop.pause();
-
     let mut window = window_q.single_mut();
 
     window.resolution.set(480.0, 720.0);
@@ -157,6 +228,7 @@ fn add_walls(mut commands: Commands) {
             )),
             ..default()
         },
+        RunningTag,
     ));
 
     // left
@@ -169,6 +241,7 @@ fn add_walls(mut commands: Commands) {
             transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
             ..default()
         },
+        RunningTag,
     ));
 
     // right
@@ -181,6 +254,7 @@ fn add_walls(mut commands: Commands) {
             transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
             ..default()
         },
+        RunningTag,
     ));
 }
 
@@ -247,6 +321,7 @@ fn tick_next_ball(
             },
             BallSize(next_ball_size.0),
             Position(Vec2::new(0.0, DROP_LINE)),
+            RunningTag,
         ));
         return;
     }
@@ -287,6 +362,7 @@ fn merge_on_collision(
     ballsize_q: Query<(&BallSize, &Position, &LinearVelocity, &AngularVelocity)>,
     mut commands: Commands,
     ball_sizes: Res<BallSizes>,
+    mut score: ResMut<Score>,
 ) {
     for Collision(contact) in collision_event_reader.iter() {
         // Check BallSize component on entities. If present and equal, remove the two contacting
@@ -304,6 +380,8 @@ fn merge_on_collision(
                     if size >= ball_sizes.0.len() {
                         continue;
                     }
+
+                    score.0 += size;
 
                     // Magic numbers to stop insane velocities
                     let _lv = (lv1.0 + lv2.0) / 10.0;
@@ -339,6 +417,7 @@ fn new_ball(
     LinearDamping,
     BallSize,
     Friction,
+    RunningTag,
 ) {
     let radius = ball_sizes.0[size].0;
     let matmesh = MaterialMesh2dBundle {
@@ -354,6 +433,7 @@ fn new_ball(
         LinearDamping(LINEAR_DAMPING),
         BallSize(size),
         Friction::new(FRICTION),
+        RunningTag,
     )
 }
 
@@ -376,3 +456,6 @@ fn set_next_size(
     next_size.0 = x;
     next_state.0 = Some(NextBallState::Selected);
 }
+
+#[derive(Resource, Default)]
+struct Score(usize);

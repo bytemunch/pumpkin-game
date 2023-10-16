@@ -1,10 +1,27 @@
+use std::f32::consts::PI;
+
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_xpbd_2d::prelude::*;
+use rand::prelude::*;
+
+const DROP_LINE: f32 = 3.0;
+const SIZE_COUNT: usize = 11;
+
+const BOX_WIDTH: f32 = 4.4;
+const BOX_HEIGHT: f32 = 5.0;
+
+const MAX_RADIUS: f32 = (BOX_WIDTH / 2.2) / 2.0;
+const MIN_RADIUS: f32 = 0.15;
+
+const LINEAR_DAMPING: f32 = 10.0;
+const FRICTION: f32 = 1.0;
+
+const G: f32 = 90.0;
 
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
-        .insert_resource(Gravity(Vec2::NEG_Y * 29.81))
+        .insert_resource(Gravity(Vec2::NEG_Y * G))
         .add_systems(Startup, (setup, add_walls))
         .add_systems(
             Update,
@@ -17,12 +34,15 @@ fn main() {
                 merge_on_collision,
             ),
         )
+        .add_systems(OnEnter(NextBallState::Pick), set_next_size)
         .add_systems(OnEnter(AppState::Running), resume)
         .add_systems(OnExit(AppState::Running), pause)
         .init_resource::<CursorWorldPos>()
+        .init_resource::<NextBallSize>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
         .add_state::<AppState>()
         .add_state::<GameState>()
+        .add_state::<NextBallState>()
         .run();
 }
 
@@ -53,7 +73,21 @@ struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
 #[derive(Component)]
 struct BallSize(usize);
 
-const DROP_LINE: f32 = 3.0;
+fn lerp(v0: f32, v1: f32, t: f32) -> f32 {
+    v0 + t * (v1 - v0)
+}
+
+//fn ease_in_cubic(t: f32) -> f32 {
+//    t * t * t
+//}
+//
+//fn ease_in_circ(t: f32) -> f32 {
+//    1.0 - (1.0 - t.powi(2)).sqrt()
+//}
+
+fn ease_in_sine(t: f32) -> f32 {
+    1.0 - ((t * PI) / 2.0).cos()
+}
 
 fn setup(
     mut commands: Commands,
@@ -80,15 +114,17 @@ fn setup(
 
     let mut ball_sizes = vec![];
 
-    let max_radius = 0.5;
-    let size_count = 9;
-    for i in 1..size_count + 1 {
-        let radius = max_radius * (i as f32 / size_count as f32);
+    for i in 1..=SIZE_COUNT {
+        let radius = lerp(
+            MIN_RADIUS,
+            MAX_RADIUS,
+            ease_in_sine(i as f32 / SIZE_COUNT as f32),
+        );
         let mesh = meshes.add(shape::Circle::new(radius).into());
         let mat = materials.add(ColorMaterial::from(Color::rgb(
             0.5,
             0.5,
-            i as f32 / size_count as f32,
+            i as f32 / SIZE_COUNT as f32,
         )));
 
         ball_sizes.push((radius, mesh, mat));
@@ -104,20 +140,18 @@ fn add_walls(mut commands: Commands) {
         ..default()
     };
 
-    let floor_width = 4.0;
-    let wall_thickness = 0.3;
-    let wall_height = 5.0;
+    let wall_thickness = 1.0;
     let top_offset = -0.8;
 
     // floor
     commands.spawn((
         RigidBody::Static,
-        Collider::cuboid(floor_width + wall_thickness, wall_thickness),
-        Position(Vec2::new(0.0, top_offset - wall_height / 2.0)),
+        Collider::cuboid(BOX_WIDTH + wall_thickness, wall_thickness),
+        Position(Vec2::new(0.0, top_offset - BOX_HEIGHT / 2.0)),
         SpriteBundle {
             sprite: square_sprite.clone(),
             transform: Transform::from_scale(Vec3::new(
-                floor_width + wall_thickness,
+                BOX_WIDTH + wall_thickness,
                 wall_thickness,
                 1.0,
             )),
@@ -128,11 +162,11 @@ fn add_walls(mut commands: Commands) {
     // left
     commands.spawn((
         RigidBody::Static,
-        Collider::cuboid(wall_thickness, wall_height),
-        Position(Vec2::new(-floor_width / 2.0, top_offset)),
+        Collider::cuboid(wall_thickness, BOX_HEIGHT),
+        Position(Vec2::new(-BOX_WIDTH / 2.0, top_offset)),
         SpriteBundle {
             sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(wall_thickness, wall_height, 1.0)),
+            transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
             ..default()
         },
     ));
@@ -140,11 +174,11 @@ fn add_walls(mut commands: Commands) {
     // right
     commands.spawn((
         RigidBody::Static,
-        Collider::cuboid(wall_thickness, wall_height),
-        Position(Vec2::new(floor_width / 2.0, top_offset)),
+        Collider::cuboid(wall_thickness, BOX_HEIGHT),
+        Position(Vec2::new(BOX_WIDTH / 2.0, top_offset)),
         SpriteBundle {
             sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(wall_thickness, wall_height, 1.0)),
+            transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
             ..default()
         },
     ));
@@ -154,18 +188,19 @@ fn add_walls(mut commands: Commands) {
 struct FakeBall;
 
 fn fake_ball_follow_mouse(
-    mut fake_ball_q: Query<&mut Position, With<FakeBall>>,
+    mut fake_ball_q: Query<(&mut Position, &BallSize), With<FakeBall>>,
     cursor: Res<CursorWorldPos>,
+    ball_sizes: Res<BallSizes>,
 ) {
-    if let Ok(mut ball) = fake_ball_q.get_single_mut() {
-        ball.x = cursor.0.x;
+    if let Ok((mut pos, size)) = fake_ball_q.get_single_mut() {
+        let max = BOX_WIDTH / 2.0 - ball_sizes.0[size.0].0 - 0.5; // wall_thickness
+        let min = -BOX_WIDTH / 2.0 + ball_sizes.0[size.0].0 + 0.5;
+        pos.x = cursor.0.x.clamp(min, max);
     }
 }
 
 #[derive(Resource)]
 struct NextBallTimer(Timer);
-
-const SIZE: usize = 4;
 
 fn release_ball(
     mut next_ball_timer: ResMut<NextBallTimer>,
@@ -173,6 +208,8 @@ fn release_ball(
     mut commands: Commands,
     mouse: Res<Input<MouseButton>>,
     ball_sizes: Res<BallSizes>,
+    mut next_ball_state: ResMut<NextState<NextBallState>>,
+    next_ball_size: Res<NextBallSize>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) || fake_ball_q.is_empty() {
         return;
@@ -180,25 +217,14 @@ fn release_ball(
 
     next_ball_timer.0.reset();
 
+    let size = next_ball_size.0;
+
     if let Ok((entity, position)) = fake_ball_q.get_single_mut() {
-        let radius = ball_sizes.0[SIZE].0;
-
-        let matmesh = MaterialMesh2dBundle {
-            mesh: ball_sizes.0[SIZE].1.clone().into(),
-            material: ball_sizes.0[SIZE].2.clone(),
-            ..default()
-        };
-
-        commands.spawn((
-            RigidBody::Dynamic,
-            Collider::ball(radius),
-            matmesh.clone(),
-            Position(position.0),
-            BallSize(SIZE),
-            LinearDamping(5.0),
-        ));
+        commands.spawn(new_ball(position.0, size, &ball_sizes));
 
         commands.entity(entity).despawn();
+
+        next_ball_state.0 = Some(NextBallState::Pick);
     }
 }
 
@@ -208,16 +234,18 @@ fn tick_next_ball(
     mut commands: Commands,
     ball_sizes: Res<BallSizes>,
     fake_ball_q: Query<&FakeBall>,
+    next_ball_size: Res<NextBallSize>,
 ) {
     if next_ball_timer.0.finished() && fake_ball_q.is_empty() {
         commands.spawn((
             RigidBody::Static,
             FakeBall,
             MaterialMesh2dBundle {
-                mesh: ball_sizes.0[SIZE].1.clone().into(),
-                material: ball_sizes.0[SIZE].2.clone(),
+                mesh: ball_sizes.0[next_ball_size.0].1.clone().into(),
+                material: ball_sizes.0[next_ball_size.0].2.clone(),
                 ..default()
             },
+            BallSize(next_ball_size.0),
             Position(Vec2::new(0.0, DROP_LINE)),
         ));
         return;
@@ -274,34 +302,20 @@ fn merge_on_collision(
                     let size = ball1.0 + 1;
 
                     if size >= ball_sizes.0.len() {
-                        return;
+                        continue;
                     }
 
-                    let radius = ball_sizes.0[size].0;
-
-                    let matmesh = MaterialMesh2dBundle {
-                        mesh: ball_sizes.0[size].1.clone().into(),
-                        material: ball_sizes.0[size].2.clone(),
-                        ..default()
-                    };
-
                     // Magic numbers to stop insane velocities
-                    let position = (pos1.0 + pos2.0) / 2.0;
                     let _lv = (lv1.0 + lv2.0) / 10.0;
                     let av = (av1.0 + av2.0) / 4.0;
 
                     //println!("AV {:?}, LV {:?}, POS {:?}", av, lv, position);
 
-                    commands.spawn((
-                        RigidBody::Dynamic,
-                        Collider::ball(radius),
-                        matmesh.clone(),
-                        Position(position),
-                        //LinearVelocity(lv),
-                        AngularVelocity(av),
-                        LinearDamping(5.0),
-                        BallSize(size),
-                    ));
+                    let position = (pos1.0 + pos2.0) / 2.0;
+
+                    commands
+                        .spawn(new_ball(position, size, &ball_sizes))
+                        .insert(AngularVelocity(av));
 
                     commands.entity(entity1).despawn();
                     commands.entity(entity2).despawn();
@@ -311,4 +325,54 @@ fn merge_on_collision(
             }
         }
     }
+}
+
+fn new_ball(
+    pos: Vec2,
+    size: usize,
+    ball_sizes: &BallSizes,
+) -> (
+    RigidBody,
+    Collider,
+    MaterialMesh2dBundle<ColorMaterial>,
+    Position,
+    LinearDamping,
+    BallSize,
+    Friction,
+) {
+    let radius = ball_sizes.0[size].0;
+    let matmesh = MaterialMesh2dBundle {
+        mesh: ball_sizes.0[size].1.clone().into(),
+        material: ball_sizes.0[size].2.clone(),
+        ..default()
+    };
+    (
+        RigidBody::Dynamic,
+        Collider::ball(radius),
+        matmesh,
+        Position(pos),
+        LinearDamping(LINEAR_DAMPING),
+        BallSize(size),
+        Friction::new(FRICTION),
+    )
+}
+
+#[derive(Resource, Default)]
+struct NextBallSize(usize);
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, States, Default)]
+enum NextBallState {
+    Pick,
+    #[default]
+    Selected,
+}
+
+fn set_next_size(
+    mut next_size: ResMut<NextBallSize>,
+    mut next_state: ResMut<NextState<NextBallState>>,
+) {
+    let mut rng = rand::thread_rng();
+    let x: usize = rng.gen_range(0..SIZE_COUNT / 2);
+    next_size.0 = x;
+    next_state.0 = Some(NextBallState::Selected);
 }

@@ -4,17 +4,17 @@ use bevy_xpbd_2d::prelude::*;
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
-        .insert_resource(Gravity(Vec2::NEG_Y * 9.81))
+        .insert_resource(Gravity(Vec2::NEG_Y * 29.81))
         .add_systems(Startup, (setup, add_walls))
         .add_systems(
             Update,
             (
-                track_ball_position,
                 play,
                 fake_ball_follow_mouse,
                 cursor_to_world,
-                fake_ball_to_real,
+                release_ball,
                 tick_next_ball,
+                merge_on_collision,
             ),
         )
         .add_systems(OnEnter(AppState::Running), resume)
@@ -47,11 +47,11 @@ fn play(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<AppState>>) 
     }
 }
 
-#[derive(Component)]
-struct TrackMe;
-
 #[derive(Resource)]
 struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
+
+#[derive(Component)]
+struct BallSize(usize);
 
 const DROP_LINE: f32 = 3.0;
 
@@ -80,11 +80,16 @@ fn setup(
 
     let mut ball_sizes = vec![];
 
-    let min_radius = 0.1;
-    for i in 1..10 {
-        let radius = min_radius * i as f32;
+    let max_radius = 0.5;
+    let size_count = 9;
+    for i in 1..size_count + 1 {
+        let radius = max_radius * (i as f32 / size_count as f32);
         let mesh = meshes.add(shape::Circle::new(radius).into());
-        let mat = materials.add(ColorMaterial::from(Color::rgb_u8(128, 128, 255 * (i / 9))));
+        let mat = materials.add(ColorMaterial::from(Color::rgb(
+            0.5,
+            0.5,
+            i as f32 / size_count as f32,
+        )));
 
         ball_sizes.push((radius, mesh, mat));
     }
@@ -99,8 +104,8 @@ fn add_walls(mut commands: Commands) {
         ..default()
     };
 
-    let floor_width = 3.0;
-    let wall_thickness = 0.1;
+    let floor_width = 4.0;
+    let wall_thickness = 0.3;
     let wall_height = 5.0;
     let top_offset = -0.8;
 
@@ -162,7 +167,7 @@ struct NextBallTimer(Timer);
 
 const SIZE: usize = 4;
 
-fn fake_ball_to_real(
+fn release_ball(
     mut next_ball_timer: ResMut<NextBallTimer>,
     mut fake_ball_q: Query<(Entity, &Position), With<FakeBall>>,
     mut commands: Commands,
@@ -187,9 +192,10 @@ fn fake_ball_to_real(
         commands.spawn((
             RigidBody::Dynamic,
             Collider::ball(radius),
-            TrackMe,
             matmesh.clone(),
             Position(position.0),
+            BallSize(SIZE),
+            LinearDamping(5.0),
         ));
 
         commands.entity(entity).despawn();
@@ -248,8 +254,61 @@ fn cursor_to_world(
     }
 }
 
-fn track_ball_position(ball_q: Query<&Position, With<TrackMe>>) {
-    for b in ball_q.iter() {
-        println!("{:?}", b);
+fn merge_on_collision(
+    mut collision_event_reader: EventReader<Collision>,
+    ballsize_q: Query<(&BallSize, &Position, &LinearVelocity, &AngularVelocity)>,
+    mut commands: Commands,
+    ball_sizes: Res<BallSizes>,
+) {
+    for Collision(contact) in collision_event_reader.iter() {
+        // Check BallSize component on entities. If present and equal, remove the two contacting
+        // entities and spawn a ball with the next size at the midpoint of the contacting ball's
+        // positions.
+        //println!("{:?} + {:?} contacting", contact.entity1, contact.entity2);
+        let entity1 = contact.entity1;
+        let entity2 = contact.entity2;
+
+        if let Ok((ball1, pos1, lv1, av1)) = ballsize_q.get(entity1) {
+            if let Ok((ball2, pos2, lv2, av2)) = ballsize_q.get(entity2) {
+                if ball1.0 == ball2.0 {
+                    let size = ball1.0 + 1;
+
+                    if size >= ball_sizes.0.len() {
+                        return;
+                    }
+
+                    let radius = ball_sizes.0[size].0;
+
+                    let matmesh = MaterialMesh2dBundle {
+                        mesh: ball_sizes.0[size].1.clone().into(),
+                        material: ball_sizes.0[size].2.clone(),
+                        ..default()
+                    };
+
+                    // Magic numbers to stop insane velocities
+                    let position = (pos1.0 + pos2.0) / 2.0;
+                    let _lv = (lv1.0 + lv2.0) / 10.0;
+                    let av = (av1.0 + av2.0) / 4.0;
+
+                    //println!("AV {:?}, LV {:?}, POS {:?}", av, lv, position);
+
+                    commands.spawn((
+                        RigidBody::Dynamic,
+                        Collider::ball(radius),
+                        matmesh.clone(),
+                        Position(position),
+                        //LinearVelocity(lv),
+                        AngularVelocity(av),
+                        LinearDamping(5.0),
+                        BallSize(size),
+                    ));
+
+                    commands.entity(entity1).despawn();
+                    commands.entity(entity2).despawn();
+                    // one merge per frame to prevent doubling stuffs
+                    return;
+                }
+            }
+        }
     }
 }

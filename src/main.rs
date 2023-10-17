@@ -161,9 +161,10 @@ fn ease_in_sine(t: f32) -> f32 {
 #[derive(Component)]
 struct ScoreTag;
 
-fn build_splash(mut commands: Commands) {
+fn build_splash(mut commands: Commands, font: Res<CustomFont>) {
     let style = TextStyle {
         font_size: 30.0,
+        font: font.0.clone_weak(),
         ..default()
     };
 
@@ -174,6 +175,7 @@ fn build_splash(mut commands: Commands) {
                     value: "Pumpkin Game!\n\n\n\n".into(),
                     style: TextStyle {
                         font_size: 40.0,
+                        font: font.0.clone_weak(),
                         ..default()
                     },
                 },
@@ -185,7 +187,7 @@ fn build_splash(mut commands: Commands) {
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Px(50.0),
-                left: Val::Px(100.0),
+                left: Val::Px(150.0),
                 ..default()
             })
             .with_text_alignment(TextAlignment::Center),
@@ -198,6 +200,7 @@ fn build_running(
     mut commands: Commands,
     ball_sizes: Res<BallSizes>,
     next_ball_size: Res<NextBallSize>,
+    font: Res<CustomFont>,
 ) {
     score.0 = 0;
 
@@ -207,6 +210,7 @@ fn build_running(
                 "Score: 0",
                 TextStyle {
                     font_size: 30.0,
+                    font: font.0.clone_weak(),
                     ..default()
                 },
             )
@@ -225,6 +229,7 @@ fn build_running(
                 "Next:",
                 TextStyle {
                     font_size: 30.0,
+                    font: font.0.clone_weak(),
                     ..default()
                 },
             )
@@ -284,11 +289,15 @@ fn update_score(score: Res<Score>, mut ui_q: Query<&mut Text, With<ScoreTag>>) {
     }
 }
 
-fn build_gameover(score: Res<Score>, mut commands: Commands) {
+#[derive(Resource)]
+struct CustomFont(Handle<Font>);
+
+fn build_gameover(score: Res<Score>, mut commands: Commands, font: Res<CustomFont>) {
     let score_string = format!("Score: {}", score.0);
 
     let style = TextStyle {
         font_size: 30.0,
+        font: font.0.clone(),
         ..default()
     };
 
@@ -307,6 +316,7 @@ fn build_gameover(score: Res<Score>, mut commands: Commands) {
                     value: "\n\nSpace to Restart".into(),
                     style: TextStyle {
                         font_size: 25.0,
+                        font: font.0.clone_weak(),
                         ..default()
                     },
                 },
@@ -372,6 +382,7 @@ fn setup(
     }
 
     commands.insert_resource(BallSizes(ball_sizes));
+    commands.insert_resource(CustomFont(asset_server.load("Creepster-Regular.ttf")));
 
     commands.spawn(SpriteBundle {
         sprite: Sprite {

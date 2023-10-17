@@ -252,7 +252,7 @@ fn build_running(
             ..default()
         })
         .insert(UiImage::new(ball_sizes.0[next_ball_size.0].3.clone()))
-        .insert(NextUpTag);
+        .insert((RunningTag, NextUpTag));
 }
 
 #[derive(Component)]
@@ -534,7 +534,7 @@ fn tick_next_ball(
                 next_ball_size.0,
                 &ball_sizes,
             ))
-            .insert((RigidBody::Static, FakeBall));
+            .insert((RigidBody::Static, FakeBall)); // TODO: remove collision from fake ball
 
         return;
     }
@@ -647,8 +647,8 @@ fn new_ball(
         mesh: ball_sizes.0[size].1.clone().into(),
         material: ball_sizes.0[size].2.clone(),
         transform: Transform::from_scale(Vec3::new(
-            (2.0 / 512.0) * radius,
-            (2.0 / 512.0) * radius,
+            (2.1 / 512.0) * radius,
+            (2.1 / 512.0) * radius,
             1.0,
         )),
         ..default()

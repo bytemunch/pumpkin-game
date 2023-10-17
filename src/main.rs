@@ -18,14 +18,31 @@ const MAX_RADIUS: f32 = (BOX_WIDTH / 2.2) / 2.0;
 const MIN_RADIUS: f32 = 0.15;
 
 const LINEAR_DAMPING: f32 = 3.0;
+const ANGULAR_DAMPING: f32 = 0.7;
 const FRICTION: f32 = 0.7;
-const RESTITUTION: f32 = 0.7;
+const RESTITUTION: f32 = 0.5;
 
 const G: f32 = 70.0;
 
+const BALL_ORDER: &'static [&'static str] = &[
+    "sweet",
+    "spider",
+    "bat",
+    "apple",
+    "candy_apple",
+    "ghost",
+    "vampire",
+    "mummy",
+    "frankenstein",
+    "skull",
+    "pumpkin",
+];
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
+        .add_plugins((
+            DefaultPlugins.set(ImagePlugin::default_linear()),
+            PhysicsPlugins::default(),
+        ))
         .insert_resource(Gravity(Vec2::NEG_Y * G))
         .add_systems(Startup, setup)
         .add_systems(
@@ -113,7 +130,7 @@ fn enter_gameover(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<Ga
 }
 
 #[derive(Resource)]
-struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
+struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>, Handle<Image>)>);
 
 #[derive(Component)]
 struct BallSize(usize);
@@ -153,21 +170,21 @@ fn build_splash(mut commands: Commands) {
         .spawn(
             TextBundle::from_sections([
                 TextSection {
-                    value: "SuikaClone!\n\n\n\n".into(),
+                    value: "Pumpkin Game!\n\n\n\n".into(),
                     style: TextStyle {
                         font_size: 40.0,
                         ..default()
                     },
                 },
                 TextSection {
-                    value: "Space to start\nEsc to quit\nMouse to aim\nClick to drop".into(),
+                    value: "[Space] - Start\n[Esc] - Quit\n[Mouse] - Aim\n[Click] - Drop".into(),
                     style,
                 },
             ])
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Px(50.0),
-                left: Val::Px(130.0),
+                left: Val::Px(100.0),
                 ..default()
             })
             .with_text_alignment(TextAlignment::Center),
@@ -256,9 +273,11 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut window_q: Query<&mut Window>,
+    asset_server: Res<AssetServer>,
 ) {
     let mut window = window_q.single_mut();
 
+    window.resolution.set_scale_factor(1.0);
     window.resolution.set(480.0, 720.0);
 
     commands.spawn(Camera2dBundle {
@@ -280,24 +299,49 @@ fn setup(
             ease_in_sine(i as f32 / SIZE_COUNT as f32),
         );
         let mesh = meshes.add(shape::Circle::new(radius).into());
-        let mat = materials.add(ColorMaterial::from(Color::rgb(
+        let mat = materials.add(ColorMaterial::from(Color::rgba(
             0.5,
             0.5,
             i as f32 / SIZE_COUNT as f32,
+            0.0, // DEBUG:  remove this line to see collider
         )));
 
-        ball_sizes.push((radius, mesh, mat));
+        let img = asset_server.load(format!("{}.png", BALL_ORDER[i - 1]));
+
+        ball_sizes.push((radius, mesh, mat, img));
     }
 
     commands.insert_resource(BallSizes(ball_sizes));
+
+    commands.spawn(SpriteBundle {
+        sprite: Sprite {
+            custom_size: Some(Vec2::new(4.8, 7.2)),
+            ..default()
+        },
+        texture: asset_server.load("bg.png"),
+        transform: Transform::from_xyz(0.0, 0.0, -1.0),
+        ..default()
+    });
+
+    commands.spawn(SpriteBundle {
+        sprite: Sprite {
+            custom_size: Some(Vec2::new(4.8, 7.2)),
+            ..default()
+        },
+        texture: asset_server.load("fg.png"),
+        transform: Transform::from_xyz(0.0, 0.0, 1.0),
+        ..default()
+    });
 }
 
 fn add_walls(mut commands: Commands) {
-    let square_sprite = Sprite {
-        color: Color::rgb_u8(200, 200, 200),
-        custom_size: Some(Vec2::splat(1.0)),
-        ..default()
-    };
+    // TODO: seperate debugdraw fn instead of commented code
+    //
+    //let square_sprite = Sprite {
+    //    color: Color::rgb_u8(200, 200, 200),
+    //    custom_size: Some(Vec2::splat(1.0)),
+    //    ..default()
+    //};
 
     let wall_thickness = 1.0;
 
@@ -306,15 +350,15 @@ fn add_walls(mut commands: Commands) {
         RigidBody::Static,
         Collider::cuboid(BOX_WIDTH + wall_thickness, wall_thickness),
         Position(Vec2::new(0.0, TOP_OFFSET - BOX_HEIGHT / 2.0)),
-        SpriteBundle {
-            sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(
-                BOX_WIDTH + wall_thickness,
-                wall_thickness,
-                1.0,
-            )),
-            ..default()
-        },
+        //SpriteBundle {
+        //    sprite: square_sprite.clone(),
+        //    transform: Transform::from_scale(Vec3::new(
+        //        BOX_WIDTH + wall_thickness,
+        //        wall_thickness,
+        //        1.0,
+        //    )),
+        //    ..default()
+        //},
         RunningTag,
     ));
 
@@ -323,11 +367,11 @@ fn add_walls(mut commands: Commands) {
         RigidBody::Static,
         Collider::cuboid(wall_thickness, BOX_HEIGHT * 100.0), // walls are actually very tall, visually not
         Position(Vec2::new(-BOX_WIDTH / 2.0, TOP_OFFSET)),
-        SpriteBundle {
-            sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
-            ..default()
-        },
+        //SpriteBundle {
+        //    sprite: square_sprite.clone(),
+        //    transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
+        //    ..default()
+        //},
         RunningTag,
     ));
 
@@ -336,11 +380,11 @@ fn add_walls(mut commands: Commands) {
         RigidBody::Static,
         Collider::cuboid(wall_thickness, BOX_HEIGHT * 100.0),
         Position(Vec2::new(BOX_WIDTH / 2.0, TOP_OFFSET)),
-        SpriteBundle {
-            sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
-            ..default()
-        },
+        //SpriteBundle {
+        //    sprite: square_sprite.clone(),
+        //    transform: Transform::from_scale(Vec3::new(wall_thickness, BOX_HEIGHT, 1.0)),
+        //    ..default()
+        //},
         RunningTag,
     ));
 
@@ -349,15 +393,15 @@ fn add_walls(mut commands: Commands) {
         RigidBody::Static,
         Collider::cuboid(BOX_WIDTH + wall_thickness, wall_thickness),
         Position(Vec2::new(0.0, 6.0)),
-        SpriteBundle {
-            sprite: square_sprite.clone(),
-            transform: Transform::from_scale(Vec3::new(
-                BOX_WIDTH + wall_thickness,
-                wall_thickness,
-                1.0,
-            )),
-            ..default()
-        },
+        //SpriteBundle {
+        //    sprite: square_sprite.clone(),
+        //    transform: Transform::from_scale(Vec3::new(
+        //        BOX_WIDTH + wall_thickness,
+        //        wall_thickness,
+        //        1.0,
+        //    )),
+        //    ..default()
+        //},
         RunningTag,
     ));
 }
@@ -401,7 +445,11 @@ fn release_ball(
     let size = next_ball_size.0;
 
     if let Ok((entity, position)) = fake_ball_q.get_single_mut() {
-        commands.spawn(new_ball(position.0, size, &ball_sizes));
+        let mut rng = rand::thread_rng(); // TODO: rng sound be a Res<>
+
+        commands
+            .spawn(new_ball(position.0, size, &ball_sizes))
+            .insert(AngularVelocity(rng.gen_range(-1.0..=1.0))); // prevents perfect stacking
 
         commands.entity(entity).despawn();
 
@@ -416,20 +464,17 @@ fn tick_next_ball(
     ball_sizes: Res<BallSizes>,
     fake_ball_q: Query<&FakeBall>,
     next_ball_size: Res<NextBallSize>,
+    cursor: Res<CursorWorldPos>,
 ) {
     if next_ball_timer.0.finished() && fake_ball_q.is_empty() {
-        commands.spawn((
-            RigidBody::Static,
-            FakeBall,
-            MaterialMesh2dBundle {
-                mesh: ball_sizes.0[next_ball_size.0].1.clone().into(),
-                material: ball_sizes.0[next_ball_size.0].2.clone(),
-                ..default()
-            },
-            BallSize(next_ball_size.0),
-            Position(Vec2::new(0.0, DROP_LINE)),
-            RunningTag,
-        ));
+        commands
+            .spawn(new_ball(
+                Vec2::new(cursor.0.x, DROP_LINE),
+                next_ball_size.0,
+                &ball_sizes,
+            ))
+            .insert((RigidBody::Static, FakeBall));
+
         return;
     }
 
@@ -529,16 +574,24 @@ fn new_ball(
     MaterialMesh2dBundle<ColorMaterial>,
     Position,
     LinearDamping,
+    AngularDamping,
     BallSize,
     Friction,
     RunningTag,
     SettleTimer,
     Restitution,
+    Handle<Image>,
+    Sprite,
 ) {
     let radius = ball_sizes.0[size].0;
     let matmesh = MaterialMesh2dBundle {
         mesh: ball_sizes.0[size].1.clone().into(),
         material: ball_sizes.0[size].2.clone(),
+        transform: Transform::from_scale(Vec3::new(
+            (2.0 / 512.0) * radius,
+            (2.0 / 512.0) * radius,
+            1.0,
+        )),
         ..default()
     };
     (
@@ -547,11 +600,17 @@ fn new_ball(
         matmesh,
         Position(pos),
         LinearDamping(LINEAR_DAMPING),
+        AngularDamping(ANGULAR_DAMPING),
         BallSize(size),
         Friction::new(FRICTION),
         RunningTag,
         SettleTimer(Timer::from_seconds(OVERTOP_TIMER, TimerMode::Once)),
         Restitution::new(RESTITUTION),
+        ball_sizes.0[size].3.clone(),
+        Sprite {
+            //custom_size: Some(Vec2::splat(radius * 2.0)),
+            ..default()
+        },
     )
 }
 
@@ -583,7 +642,7 @@ struct Score(usize);
 struct SettleTimer(Timer);
 
 fn check_over_top(
-    mut ball_q: Query<(&Position, &mut SettleTimer, &BallSize)>,
+    mut ball_q: Query<(&Position, &mut SettleTimer, &BallSize), Without<FakeBall>>,
     ball_sizes: Res<BallSizes>,
     time: Res<Time>,
     mut next_state: ResMut<NextState<GameState>>,

@@ -11,8 +11,8 @@ const BOX_WIDTH: f32 = 4.4;
 const BOX_HEIGHT: f32 = 5.0;
 const TOP_OFFSET: f32 = -0.8;
 
-const DEATH_LINE: f32 = TOP_OFFSET + BOX_HEIGHT / 2.0;
-const OVERTOP_TIMER: f32 = 3.0;
+const DEATH_LINE: f32 = 2.0;
+const OVERTOP_TIMER: f32 = 1.5;
 
 const MAX_RADIUS: f32 = (BOX_WIDTH / 2.2) / 2.0;
 const MIN_RADIUS: f32 = 0.15;
@@ -56,6 +56,7 @@ fn main() {
                     merge_on_collision,
                     enter_splash,
                     update_score,
+                    update_next_up,
                     check_over_top,
                     enter_gameover,
                 )
@@ -78,6 +79,7 @@ fn main() {
         .add_systems(OnExit(AppState::Running), pause)
         .init_resource::<CursorWorldPos>()
         .init_resource::<NextBallSize>()
+        .init_resource::<NextNextBallSize>()
         .init_resource::<Score>()
         .init_resource::<Multiplier>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
@@ -192,7 +194,12 @@ fn build_splash(mut commands: Commands) {
         .insert(SplashTag);
 }
 
-fn build_running(mut score: ResMut<Score>, mut commands: Commands) {
+fn build_running(
+    mut score: ResMut<Score>,
+    mut commands: Commands,
+    ball_sizes: Res<BallSizes>,
+    next_ball_size: Res<NextBallSize>,
+) {
     score.0 = 0;
 
     commands
@@ -212,6 +219,60 @@ fn build_running(mut score: ResMut<Score>, mut commands: Commands) {
             }),
         )
         .insert((ScoreTag, RunningTag));
+
+    commands
+        .spawn(
+            TextBundle::from_section(
+                "Next:",
+                TextStyle {
+                    font_size: 30.0,
+                    ..default()
+                },
+            )
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                right: Val::Px(5.0),
+                top: Val::Px(5.0),
+                ..default()
+            }),
+        )
+        .insert(RunningTag);
+
+    commands
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Px(50.0),
+                height: Val::Px(50.0),
+                position_type: PositionType::Absolute,
+                right: Val::Px(15.0),
+                top: Val::Px(45.0),
+                ..default()
+            },
+            background_color: Color::WHITE.into(),
+            ..default()
+        })
+        .insert(UiImage::new(ball_sizes.0[next_ball_size.0].3.clone()))
+        .insert(NextUpTag);
+}
+
+#[derive(Component)]
+struct NextUpTag;
+
+fn update_next_up(
+    next_q: Query<Entity, With<NextUpTag>>,
+    next_next_ball_size: Res<NextNextBallSize>,
+    ball_sizes: Res<BallSizes>,
+    mut commands: Commands,
+) {
+    if !next_next_ball_size.is_changed() {
+        return;
+    }
+
+    if let Ok(entity) = next_q.get_single() {
+        commands
+            .entity(entity)
+            .insert(UiImage::new(ball_sizes.0[next_next_ball_size.0].3.clone()));
+    }
 }
 
 fn update_score(score: Res<Score>, mut ui_q: Query<&mut Text, With<ScoreTag>>) {
@@ -538,8 +599,6 @@ fn merge_on_collision(
 
                     multiplier.0 += 1;
 
-                    println!("Multiplier: {}", multiplier.0);
-
                     score.0 += size * multiplier.0;
 
                     // Magic numbers to stop insane velocities
@@ -616,6 +675,8 @@ fn new_ball(
 
 #[derive(Resource, Default)]
 struct NextBallSize(usize);
+#[derive(Resource, Default)]
+struct NextNextBallSize(usize);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, States, Default)]
 enum NextBallState {
@@ -626,12 +687,14 @@ enum NextBallState {
 
 fn set_next_size(
     mut next_size: ResMut<NextBallSize>,
+    mut next_next_size: ResMut<NextNextBallSize>,
     mut next_state: ResMut<NextState<NextBallState>>,
 ) {
     let mut rng = rand::thread_rng();
     let x: usize = rng.gen_range(0..SIZE_COUNT / 2);
     //let x = 10;
-    next_size.0 = x;
+    next_size.0 = next_next_size.0;
+    next_next_size.0 = x;
     next_state.0 = Some(NextBallState::Selected);
 }
 

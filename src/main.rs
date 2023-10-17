@@ -1,6 +1,10 @@
 use std::f32::consts::PI;
 
-use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
+use bevy::{
+    audio::{PlaybackMode, Volume, VolumeLevel},
+    prelude::*,
+    sprite::MaterialMesh2dBundle,
+};
 use bevy_xpbd_2d::prelude::*;
 
 const DROP_LINE: f32 = 3.0;
@@ -62,6 +66,8 @@ fn main() {
                     .run_if(in_state(GameState::Running)),
                 enter_running.run_if(in_state(GameState::Splash)),
                 enter_running.run_if(in_state(GameState::GameOver)),
+                toggle_bgm,
+                toggle_sfx,
             ),
         )
         .add_systems(OnEnter(GameState::Splash), build_splash)
@@ -130,8 +136,34 @@ fn enter_gameover(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<Ga
     }
 }
 
+#[derive(Component)]
+struct MusicTag;
+
+fn toggle_bgm(keys: Res<Input<KeyCode>>, bgm_q: Query<&mut AudioSink, With<MusicTag>>) {
+    if keys.just_pressed(KeyCode::M) {
+        if let Ok(sink) = bgm_q.get_single() {
+            sink.toggle();
+        }
+    }
+}
+
+#[derive(Resource)]
+struct SoundToggle(bool);
+
+fn toggle_sfx(keys: Res<Input<KeyCode>>, mut toggle: ResMut<SoundToggle>) {
+    if keys.just_pressed(KeyCode::S) {
+        toggle.0 = !toggle.0;
+    }
+}
+
 #[derive(Resource)]
 struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>, Handle<Image>)>);
+
+#[derive(Resource)]
+struct AudioHandles {
+    drop: Handle<AudioSource>,
+    merge: Handle<AudioSource>,
+}
 
 #[derive(Component)]
 struct BallSize(usize);
@@ -180,7 +212,7 @@ fn build_splash(mut commands: Commands, font: Res<CustomFont>) {
                     },
                 },
                 TextSection {
-                    value: "[Space] - Start\n[Esc] - Quit\n[Mouse] - Aim\n[Click] - Drop".into(),
+                    value: "[Space] - Start\n[Esc] - Quit\n[Mouse] - Aim\n[Click] - Drop\n[S] - Toggle SFX\n[M] - Toggle BGM".into(),
                     style,
                 },
             ])
@@ -384,6 +416,27 @@ fn setup(
     commands.insert_resource(BallSizes(ball_sizes));
     commands.insert_resource(CustomFont(asset_server.load("Creepster-Regular.ttf")));
 
+    // Audio
+    commands.insert_resource(AudioHandles {
+        merge: asset_server.load("pop-1.ogg"),
+        drop: asset_server.load("drop-1.ogg"),
+    });
+
+    commands.insert_resource(SoundToggle(true));
+
+    // BGM
+    commands
+        .spawn(AudioBundle {
+            source: asset_server.load("spook.ogg"),
+            settings: PlaybackSettings {
+                mode: PlaybackMode::Loop,
+                volume: Volume::Relative(VolumeLevel::new(0.7)),
+                ..default()
+            },
+            ..default()
+        })
+        .insert(MusicTag);
+
     commands.spawn(SpriteBundle {
         sprite: Sprite {
             custom_size: Some(Vec2::new(4.8, 7.2)),
@@ -504,6 +557,8 @@ fn release_ball(
     mut next_ball_state: ResMut<NextState<NextBallState>>,
     next_ball_size: Res<NextBallSize>,
     mut multiplier: ResMut<Multiplier>,
+    audio_handles: Res<AudioHandles>,
+    sound_toggle: Res<SoundToggle>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) || fake_ball_q.is_empty() {
         return;
@@ -524,6 +579,21 @@ fn release_ball(
         commands.entity(entity).despawn();
 
         next_ball_state.0 = Some(NextBallState::Pick);
+
+        if !sound_toggle.0 {
+            return;
+        }
+
+        let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
+        commands.spawn(AudioBundle {
+            source: audio_handles.drop.clone(),
+            settings: PlaybackSettings {
+                volume: Volume::Relative(VolumeLevel::new(0.3)),
+                speed,
+                ..default()
+            },
+            ..default()
+        });
     }
 }
 
@@ -589,6 +659,8 @@ fn merge_on_collision(
     ball_sizes: Res<BallSizes>,
     mut score: ResMut<Score>,
     mut multiplier: ResMut<Multiplier>,
+    audio_handles: Res<AudioHandles>,
+    sound_toggle: Res<SoundToggle>,
 ) {
     for Collision(contact) in collision_event_reader.iter() {
         // Check BallSize component on entities. If present and equal, remove the two contacting
@@ -624,6 +696,16 @@ fn merge_on_collision(
 
                     commands.entity(entity1).despawn();
                     commands.entity(entity2).despawn();
+
+                    if !sound_toggle.0 {
+                        return;
+                    }
+                    let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
+                    commands.spawn(AudioBundle {
+                        source: audio_handles.merge.clone(),
+                        settings: PlaybackSettings { speed, ..default() },
+                        ..default()
+                    });
                     // one merge per frame to prevent doubling stuffs
                     return;
                 }

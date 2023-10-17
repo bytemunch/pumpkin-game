@@ -2,7 +2,6 @@ use std::f32::consts::PI;
 
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use bevy_xpbd_2d::prelude::*;
-use rand::prelude::*;
 
 const DROP_LINE: f32 = 3.0;
 const SIZE_COUNT: usize = 11;
@@ -506,11 +505,10 @@ fn release_ball(
     let size = next_ball_size.0;
 
     if let Ok((entity, position)) = fake_ball_q.get_single_mut() {
-        let mut rng = rand::thread_rng(); // TODO: rng sound be a Res<>
-
+        let av = -1.0 + fastrand::f32() * 2.0;
         commands
             .spawn(new_ball(position.0, size, &ball_sizes))
-            .insert(AngularVelocity(rng.gen_range(-1.0..=1.0))); // prevents perfect stacking
+            .insert(AngularVelocity(av)); // prevents perfect stacking
 
         commands.entity(entity).despawn();
 
@@ -690,9 +688,7 @@ fn set_next_size(
     mut next_next_size: ResMut<NextNextBallSize>,
     mut next_state: ResMut<NextState<NextBallState>>,
 ) {
-    let mut rng = rand::thread_rng();
-    let x: usize = rng.gen_range(0..SIZE_COUNT / 2);
-    //let x = 10;
+    let x: usize = fastrand::usize(..SIZE_COUNT / 2); //rng.gen_range(0..SIZE_COUNT / 2);
     next_size.0 = next_next_size.0;
     next_next_size.0 = x;
     next_state.0 = Some(NextBallState::Selected);

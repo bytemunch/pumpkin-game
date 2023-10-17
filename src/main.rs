@@ -139,8 +139,15 @@ fn enter_gameover(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<Ga
 #[derive(Component)]
 struct MusicTag;
 
-fn toggle_bgm(keys: Res<Input<KeyCode>>, bgm_q: Query<&mut AudioSink, With<MusicTag>>) {
+#[derive(Resource)]
+struct MusicToggle(bool);
+fn toggle_bgm(
+    keys: Res<Input<KeyCode>>,
+    bgm_q: Query<&mut AudioSink, With<MusicTag>>,
+    mut toggle: ResMut<MusicToggle>,
+) {
     if keys.just_pressed(KeyCode::M) {
+        toggle.0 = !toggle.0;
         if let Ok(sink) = bgm_q.get_single() {
             sink.toggle();
         }
@@ -163,6 +170,7 @@ struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>, Handle<Image>)>)
 struct AudioHandles {
     drop: Handle<AudioSource>,
     merge: Handle<AudioSource>,
+    game_over: Handle<AudioSource>,
 }
 
 #[derive(Component)]
@@ -233,8 +241,16 @@ fn build_running(
     ball_sizes: Res<BallSizes>,
     next_ball_size: Res<NextBallSize>,
     font: Res<CustomFont>,
+    bgm_q: Query<&AudioSink, With<MusicTag>>,
+    bgm_toggle: Res<MusicToggle>,
 ) {
     score.0 = 0;
+
+    if let Ok(sink) = bgm_q.get_single() {
+        if bgm_toggle.0 {
+            sink.play();
+        }
+    }
 
     commands
         .spawn(
@@ -324,7 +340,15 @@ fn update_score(score: Res<Score>, mut ui_q: Query<&mut Text, With<ScoreTag>>) {
 #[derive(Resource)]
 struct CustomFont(Handle<Font>);
 
-fn build_gameover(score: Res<Score>, mut commands: Commands, font: Res<CustomFont>) {
+fn build_gameover(
+    score: Res<Score>,
+    mut commands: Commands,
+    font: Res<CustomFont>,
+    bgm_q: Query<&AudioSink, With<MusicTag>>,
+    audio_handles: Res<AudioHandles>,
+    sound_toggle: Res<SoundToggle>,
+) {
+    //
     let score_string = format!("Score: {}", score.0);
 
     let style = TextStyle {
@@ -368,6 +392,22 @@ fn build_gameover(score: Res<Score>, mut commands: Commands, font: Res<CustomFon
             .with_text_alignment(TextAlignment::Center),
         )
         .insert(GameOverTag);
+
+    if let Ok(sink) = bgm_q.get_single() {
+        sink.pause();
+    }
+
+    if !sound_toggle.0 {
+        return;
+    }
+
+    commands.spawn(AudioBundle {
+        source: audio_handles.game_over.clone(),
+        settings: PlaybackSettings {
+            volume: Volume::Relative(VolumeLevel::new(0.7)),
+            ..default()
+        },
+    });
 }
 
 fn setup(
@@ -420,9 +460,11 @@ fn setup(
     commands.insert_resource(AudioHandles {
         merge: asset_server.load("pop-1.ogg"),
         drop: asset_server.load("drop-1.ogg"),
+        game_over: asset_server.load("game-over.ogg"),
     });
 
     commands.insert_resource(SoundToggle(true));
+    commands.insert_resource(MusicToggle(true));
 
     // BGM
     commands

@@ -68,6 +68,7 @@ fn main() {
                 enter_running.run_if(in_state(GameState::GameOver)),
                 toggle_bgm,
                 toggle_sfx,
+                do_kill_me,
             ),
         )
         .add_systems(OnEnter(GameState::Splash), build_splash)
@@ -303,7 +304,7 @@ fn build_running(
             background_color: Color::WHITE.into(),
             ..default()
         })
-        .insert(UiImage::new(ball_sizes.0[next_ball_size.0].3.clone()))
+        .insert(UiImage::new(ball_sizes.0[next_ball_size.0].3.clone_weak()))
         .insert((RunningTag, NextUpTag));
 }
 
@@ -321,9 +322,9 @@ fn update_next_up(
     }
 
     if let Ok(entity) = next_q.get_single() {
-        commands
-            .entity(entity)
-            .insert(UiImage::new(ball_sizes.0[next_next_ball_size.0].3.clone()));
+        commands.entity(entity).insert(UiImage::new(
+            ball_sizes.0[next_next_ball_size.0].3.clone_weak(),
+        ));
     }
 }
 
@@ -353,7 +354,7 @@ fn build_gameover(
 
     let style = TextStyle {
         font_size: 30.0,
-        font: font.0.clone(),
+        font: font.0.clone_weak(),
         ..default()
     };
 
@@ -401,13 +402,15 @@ fn build_gameover(
         return;
     }
 
-    commands.spawn(AudioBundle {
-        source: audio_handles.game_over.clone(),
-        settings: PlaybackSettings {
-            volume: Volume::Relative(VolumeLevel::new(0.7)),
-            ..default()
-        },
-    });
+    commands
+        .spawn(AudioBundle {
+            source: audio_handles.game_over.clone_weak(),
+            settings: PlaybackSettings {
+                volume: Volume::Relative(VolumeLevel::new(0.7)),
+                ..default()
+            },
+        })
+        .insert(KillMeTimer(Timer::from_seconds(0.9, TimerMode::Once)));
 }
 
 fn setup(
@@ -627,15 +630,35 @@ fn release_ball(
         }
 
         let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
-        commands.spawn(AudioBundle {
-            source: audio_handles.drop.clone(),
-            settings: PlaybackSettings {
-                volume: Volume::Relative(VolumeLevel::new(0.3)),
-                speed,
+        commands
+            .spawn(AudioBundle {
+                source: audio_handles.drop.clone_weak(),
+                settings: PlaybackSettings {
+                    volume: Volume::Relative(VolumeLevel::new(0.3)),
+                    speed,
+                    ..default()
+                },
                 ..default()
-            },
-            ..default()
-        });
+            })
+            .insert(KillMeTimer(Timer::from_seconds(0.5, TimerMode::Once)));
+    }
+}
+
+#[derive(Component)]
+struct KillMeTimer(Timer);
+
+fn do_kill_me(
+    mut commands: Commands,
+    mut audio_q: Query<(Entity, &mut KillMeTimer)>,
+    time: Res<Time>,
+) {
+    for (entity, mut timer) in audio_q.iter_mut() {
+        timer.0.tick(time.delta());
+        if !timer.0.finished() {
+            return;
+        }
+
+        commands.entity(entity).despawn();
     }
 }
 
@@ -743,11 +766,13 @@ fn merge_on_collision(
                         return;
                     }
                     let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
-                    commands.spawn(AudioBundle {
-                        source: audio_handles.merge.clone(),
-                        settings: PlaybackSettings { speed, ..default() },
-                        ..default()
-                    });
+                    commands
+                        .spawn(AudioBundle {
+                            source: audio_handles.merge.clone_weak(),
+                            settings: PlaybackSettings { speed, ..default() },
+                            ..default()
+                        })
+                        .insert(KillMeTimer(Timer::from_seconds(0.5, TimerMode::Once)));
                     // one merge per frame to prevent doubling stuffs
                     return;
                 }
@@ -777,8 +802,8 @@ fn new_ball(
 ) {
     let radius = ball_sizes.0[size].0;
     let matmesh = MaterialMesh2dBundle {
-        mesh: ball_sizes.0[size].1.clone().into(),
-        material: ball_sizes.0[size].2.clone(),
+        mesh: ball_sizes.0[size].1.clone_weak().into(),
+        material: ball_sizes.0[size].2.clone_weak(),
         transform: Transform::from_scale(Vec3::new(
             (2.1 / 512.0) * radius,
             (2.1 / 512.0) * radius,
@@ -798,7 +823,7 @@ fn new_ball(
         RunningTag,
         SettleTimer(Timer::from_seconds(OVERTOP_TIMER, TimerMode::Once)),
         Restitution::new(RESTITUTION),
-        ball_sizes.0[size].3.clone(),
+        ball_sizes.0[size].3.clone_weak(),
         Sprite {
             //custom_size: Some(Vec2::splat(radius * 2.0)),
             ..default()

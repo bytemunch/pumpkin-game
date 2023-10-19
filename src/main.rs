@@ -2,8 +2,10 @@ use std::f32::consts::PI;
 
 use bevy::{
     audio::{PlaybackMode, Volume, VolumeLevel},
+    input::touch::TouchPhase,
     prelude::*,
     sprite::MaterialMesh2dBundle,
+    window::WindowResized,
 };
 use bevy_xpbd_2d::prelude::*;
 
@@ -43,7 +45,15 @@ const BALL_ORDER: &'static [&'static str] = &[
 fn main() {
     App::new()
         .add_plugins((
-            DefaultPlugins.set(ImagePlugin::default_linear()),
+            DefaultPlugins
+                .set(ImagePlugin::default_linear())
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        fit_canvas_to_parent: true,
+                        ..default()
+                    }),
+                    ..default()
+                }),
             PhysicsPlugins::default(),
         ))
         .insert_resource(Gravity(Vec2::NEG_Y * G))
@@ -66,9 +76,12 @@ fn main() {
                     .run_if(in_state(GameState::Running)),
                 enter_running.run_if(in_state(GameState::Splash)),
                 enter_running.run_if(in_state(GameState::GameOver)),
-                toggle_bgm,
-                toggle_sfx,
+                music_button,
+                sfx_button,
                 do_kill_me,
+                set_scale_from_window,
+                play_button,
+                tick_debounce,
             ),
         )
         .add_systems(OnEnter(GameState::Splash), build_splash)
@@ -89,6 +102,7 @@ fn main() {
         .init_resource::<Score>()
         .init_resource::<Multiplier>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
+        .insert_resource(DebounceTimer(Timer::from_seconds(0.3, TimerMode::Once)))
         .add_state::<AppState>()
         .add_state::<GameState>()
         .add_state::<NextBallState>()
@@ -119,6 +133,9 @@ struct RunningTag;
 #[derive(Component)]
 struct GameOverTag;
 
+#[derive(Component)]
+struct UiRoot;
+
 fn enter_running(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<GameState>>) {
     if keys.just_pressed(KeyCode::Space) {
         next_state.0 = Some(GameState::Running)
@@ -142,27 +159,9 @@ struct MusicTag;
 
 #[derive(Resource)]
 struct MusicToggle(bool);
-fn toggle_bgm(
-    keys: Res<Input<KeyCode>>,
-    bgm_q: Query<&mut AudioSink, With<MusicTag>>,
-    mut toggle: ResMut<MusicToggle>,
-) {
-    if keys.just_pressed(KeyCode::M) {
-        toggle.0 = !toggle.0;
-        if let Ok(sink) = bgm_q.get_single() {
-            sink.toggle();
-        }
-    }
-}
 
 #[derive(Resource)]
 struct SoundToggle(bool);
-
-fn toggle_sfx(keys: Res<Input<KeyCode>>, mut toggle: ResMut<SoundToggle>) {
-    if keys.just_pressed(KeyCode::S) {
-        toggle.0 = !toggle.0;
-    }
-}
 
 #[derive(Resource)]
 struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>, Handle<Image>)>);
@@ -199,41 +198,226 @@ fn ease_in_sine(t: f32) -> f32 {
     1.0 - ((t * PI) / 2.0).cos()
 }
 
+fn set_scale_from_window(
+    mut ev: EventReader<WindowResized>,
+    mut projection: Query<&mut OrthographicProjection>,
+) {
+    for e in ev.iter() {
+        let mut camera_scale = 1. / (e.width / 480.) * (1. / 100.);
+
+        camera_scale = camera_scale.max(1. / (e.height / 720.) * (1. / 100.));
+
+        projection.single_mut().scale = camera_scale;
+    }
+}
+
 #[derive(Component)]
 struct ScoreTag;
 
 fn build_splash(mut commands: Commands, font: Res<CustomFont>) {
-    let style = TextStyle {
-        font_size: 30.0,
-        font: font.0.clone_weak(),
-        ..default()
-    };
-
     commands
-        .spawn(
-            TextBundle::from_sections([
-                TextSection {
-                    value: "Pumpkin Game!\n\n\n\n".into(),
-                    style: TextStyle {
-                        font_size: 40.0,
-                        font: font.0.clone_weak(),
-                        ..default()
-                    },
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    flex_wrap: FlexWrap::Wrap,
+                    padding: UiRect::top(Val::Px(50.0)),
+                    ..default()
                 },
-                TextSection {
-                    value: "[Space] - Start\n[Esc] - Quit\n[Mouse] - Aim\n[Click] - Drop\n[S] - Toggle SFX\n[M] - Toggle BGM".into(),
-                    style,
+                background_color: Color::rgb_u8(52, 52, 52).into(),
+                ..default()
+            },
+            SplashTag,
+        ))
+        .with_children(|root| {
+            root.spawn((TextBundle::from_sections([TextSection {
+                value: "Pumpkin Game!\n\n\n\n".into(),
+                style: TextStyle {
+                    font_size: 40.0,
+                    font: font.0.clone_weak(),
+                    ..default()
                 },
-            ])
-            .with_style(Style {
-                position_type: PositionType::Absolute,
-                top: Val::Px(50.0),
-                left: Val::Px(150.0),
+            }])
+            .with_text_alignment(TextAlignment::Center)
+            .with_style(Style { ..default() }),));
+
+            root.spawn(NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                },
                 ..default()
             })
-            .with_text_alignment(TextAlignment::Center),
-        )
-        .insert(SplashTag);
+            .with_children(|button_box| {
+                button_box
+                    .spawn((
+                        ButtonBundle {
+                            background_color: Color::GREEN.into(),
+                            border_color: Color::DARK_GREEN.into(),
+                            style: Style {
+                                width: Val::Px(150.0),
+                                height: Val::Px(64.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                border: UiRect::all(Val::Px(5.0)),
+                                flex_basis: Val::Percent(100.0),
+                                max_width: Val::Px(150.0),
+                                margin: UiRect::all(Val::Px(15.0)),
+                                ..default()
+                            },
+
+                            ..default()
+                        },
+                        PlayButton,
+                    ))
+                    .with_children(|parent| {
+                        parent.spawn(TextBundle::from_section(
+                            "Play",
+                            TextStyle {
+                                font: font.0.clone_weak(),
+                                font_size: 30.0,
+                                color: Color::WHITE,
+                            },
+                        ));
+                    });
+
+                button_box
+                    .spawn((
+                        ButtonBundle {
+                            background_color: Color::BLUE.into(),
+                            border_color: Color::MIDNIGHT_BLUE.into(),
+                            style: Style {
+                                width: Val::Px(150.0),
+                                height: Val::Px(64.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                border: UiRect::all(Val::Px(5.0)),
+                                flex_basis: Val::Percent(100.0),
+                                max_width: Val::Px(150.0),
+                                margin: UiRect::all(Val::Px(15.0)),
+                                ..default()
+                            },
+
+                            ..default()
+                        },
+                        MusicButton,
+                    ))
+                    .with_children(|parent| {
+                        parent.spawn(TextBundle::from_section(
+                            "Music",
+                            TextStyle {
+                                font: font.0.clone_weak(),
+                                font_size: 30.0,
+                                color: Color::WHITE,
+                            },
+                        ));
+                    });
+                button_box
+                    .spawn((
+                        ButtonBundle {
+                            background_color: Color::BLUE.into(),
+                            border_color: Color::MIDNIGHT_BLUE.into(),
+                            style: Style {
+                                width: Val::Px(150.0),
+                                height: Val::Px(64.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                border: UiRect::all(Val::Px(5.0)),
+                                flex_basis: Val::Percent(100.0),
+                                max_width: Val::Px(150.0),
+                                margin: UiRect::all(Val::Px(15.0)),
+                                ..default()
+                            },
+
+                            ..default()
+                        },
+                        SfxButton,
+                    ))
+                    .with_children(|parent| {
+                        parent.spawn(TextBundle::from_section(
+                            "Sounds",
+                            TextStyle {
+                                font: font.0.clone_weak(),
+                                font_size: 30.0,
+                                color: Color::WHITE,
+                            },
+                        ));
+                    });
+            });
+        });
+}
+
+#[derive(Component)]
+struct PlayButton;
+
+#[derive(Component)]
+struct MusicButton;
+
+#[derive(Component)]
+struct SfxButton;
+
+fn play_button(
+    button_q: Query<&Interaction, With<PlayButton>>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if let Ok(interaction) = button_q.get_single() {
+        if *interaction == Interaction::Pressed {
+            next_state.0 = Some(GameState::Running);
+        }
+    }
+}
+
+fn tick_debounce(mut timer: ResMut<DebounceTimer>, time: Res<Time>) {
+    timer.0.tick(time.delta());
+}
+
+fn music_button(
+    button_q: Query<&Interaction, With<MusicButton>>,
+    keys: Res<Input<KeyCode>>,
+    bgm_q: Query<&mut AudioSink, With<MusicTag>>,
+    mut toggle: ResMut<MusicToggle>,
+    mut debounce: ResMut<DebounceTimer>,
+) {
+    if keys.just_pressed(KeyCode::M) {
+        toggle.0 = !toggle.0;
+        if let Ok(sink) = bgm_q.get_single() {
+            sink.toggle();
+        }
+        return;
+    }
+    if let Ok(interaction) = button_q.get_single() {
+        // TODO: wait for unpress instead of this debouncing
+        // maybe match does this automatically?
+        if *interaction == Interaction::Pressed && debounce.0.finished() {
+            debounce.0.reset();
+            toggle.0 = !toggle.0;
+            if let Ok(sink) = bgm_q.get_single() {
+                sink.toggle();
+            }
+        }
+    }
+}
+fn sfx_button(
+    keys: Res<Input<KeyCode>>,
+    button_q: Query<&Interaction, With<SfxButton>>,
+    mut toggle: ResMut<SoundToggle>,
+    mut debounce: ResMut<DebounceTimer>,
+) {
+    if let Ok(interaction) = button_q.get_single() {
+        if *interaction == Interaction::Pressed && debounce.0.finished() {
+            debounce.0.reset();
+            toggle.0 = !toggle.0;
+            return;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::S) {
+        toggle.0 = !toggle.0;
+    }
 }
 
 fn build_running(
@@ -253,59 +437,80 @@ fn build_running(
         }
     }
 
-    commands
-        .spawn(
-            TextBundle::from_section(
-                "Score: 0",
-                TextStyle {
-                    font_size: 30.0,
-                    font: font.0.clone_weak(),
-                    ..default()
-                },
-            )
-            .with_style(Style {
-                position_type: PositionType::Absolute,
-                left: Val::Px(5.0),
-                top: Val::Px(5.0),
-                ..default()
-            }),
-        )
-        .insert((ScoreTag, RunningTag));
+    let margin = UiRect {
+        left: Val::Px(10.0),
+        right: Val::Px(10.0),
+        top: Val::Px(10.0),
+        bottom: Val::Px(10.0),
+    };
 
     commands
-        .spawn(
-            TextBundle::from_section(
-                "Next:",
-                TextStyle {
-                    font_size: 30.0,
-                    font: font.0.clone_weak(),
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    justify_content: JustifyContent::SpaceBetween,
+                    justify_items: JustifyItems::Start,
                     ..default()
                 },
-            )
-            .with_style(Style {
-                position_type: PositionType::Absolute,
-                right: Val::Px(5.0),
-                top: Val::Px(5.0),
-                ..default()
-            }),
-        )
-        .insert(RunningTag);
-
-    commands
-        .spawn(NodeBundle {
-            style: Style {
-                width: Val::Px(50.0),
-                height: Val::Px(50.0),
-                position_type: PositionType::Absolute,
-                right: Val::Px(15.0),
-                top: Val::Px(45.0),
                 ..default()
             },
-            background_color: Color::WHITE.into(),
-            ..default()
-        })
-        .insert(UiImage::new(ball_sizes.0[next_ball_size.0].3.clone_weak()))
-        .insert((RunningTag, NextUpTag));
+            RunningTag,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                TextBundle::from_section(
+                    "Score: 0",
+                    TextStyle {
+                        font_size: 30.0,
+                        font: font.0.clone_weak(),
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    margin: margin.clone(),
+                    ..default()
+                }),
+                ScoreTag,
+            ));
+
+            root.spawn((NodeBundle {
+                style: Style {
+                    width: Val::Px(50.0),
+                    height: Val::Px(50.0 + 20.0),
+                    margin,
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                },
+                ..default()
+            },))
+                .with_children(|next| {
+                    next.spawn((TextBundle::from_section(
+                        "Next:",
+                        TextStyle {
+                            font_size: 30.0,
+                            font: font.0.clone_weak(),
+                            ..default()
+                        },
+                    )
+                    .with_style(Style { ..default() }),));
+
+                    next.spawn((
+                        NodeBundle {
+                            background_color: Color::WHITE.into(),
+                            style: Style {
+                                width: Val::Px(50.0),
+                                height: Val::Px(50.0),
+                                ..default()
+                            },
+                            ..default()
+                        },
+                        UiImage::new(ball_sizes.0[next_ball_size.0].3.clone_weak()),
+                        NextUpTag,
+                    ));
+                });
+        });
 }
 
 #[derive(Component)]
@@ -357,42 +562,79 @@ fn build_gameover(
         font: font.0.clone_weak(),
         ..default()
     };
+    let gameover_text = (TextBundle::from_sections([
+        TextSection {
+            value: "Skill Issue\n".into(),
+            style: style.clone(),
+        },
+        TextSection {
+            value: score_string,
+            style: style.clone(),
+        },
+    ])
+    .with_text_alignment(TextAlignment::Center),);
 
     commands
-        .spawn(
-            TextBundle::from_sections([
-                TextSection {
-                    value: "Skill Issue\n".into(),
-                    style: style.clone(),
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    flex_wrap: FlexWrap::Wrap,
+                    padding: UiRect::top(Val::Px(15.0)),
+                    ..default()
                 },
-                TextSection {
-                    value: score_string,
-                    style: style.clone(),
+                background_color: Color::rgb_u8(52, 52, 52).into(),
+                ..default()
+            },
+            GameOverTag,
+        ))
+        .with_children(|root| {
+            root.spawn(gameover_text);
+            root.spawn(NodeBundle {
+                style: Style {
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
                 },
-                TextSection {
-                    value: "\n\nSpace to Restart".into(),
-                    style: TextStyle {
-                        font_size: 25.0,
-                        font: font.0.clone_weak(),
-                        ..default()
-                    },
-                },
-            ])
-            .with_style(Style {
-                // how much can i be arsed with bevy's flexbox bits
-                // every time i try it's a nightmare
-                // i don't know why, every other part of the engine
-                // feels super intuitive. but layout is a pain point.
-                // could be wrong, i can't stand the most popular
-                // js framework either.
-                position_type: PositionType::Absolute,
-                top: Val::Px(50.0),
-                left: Val::Px(150.0),
                 ..default()
             })
-            .with_text_alignment(TextAlignment::Center),
-        )
-        .insert(GameOverTag);
+            .with_children(|button_box| {
+                button_box
+                    .spawn((
+                        ButtonBundle {
+                            background_color: Color::GREEN.into(),
+                            border_color: Color::DARK_GREEN.into(),
+                            style: Style {
+                                width: Val::Px(200.0),
+                                height: Val::Px(64.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                border: UiRect::all(Val::Px(5.0)),
+                                flex_basis: Val::Percent(100.0),
+                                max_width: Val::Px(150.0),
+                                margin: UiRect::all(Val::Px(15.0)),
+                                ..default()
+                            },
+
+                            ..default()
+                        },
+                        PlayButton,
+                    ))
+                    .with_children(|parent| {
+                        parent.spawn(TextBundle::from_section(
+                            "Play Again",
+                            TextStyle {
+                                font: font.0.clone_weak(),
+                                font_size: 30.0,
+                                color: Color::WHITE,
+                            },
+                        ));
+                    });
+            });
+        });
 
     if let Ok(sink) = bgm_q.get_single() {
         sink.pause();
@@ -417,13 +659,9 @@ fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut window_q: Query<&mut Window>,
     asset_server: Res<AssetServer>,
 ) {
-    let mut window = window_q.single_mut();
-
-    window.resolution.set_scale_factor(1.0);
-    window.resolution.set(480.0, 720.0);
+    commands.insert_resource(ClearColor(Color::rgb_u8(52, 52, 52)));
 
     commands.spawn(Camera2dBundle {
         projection: OrthographicProjection {
@@ -592,12 +830,15 @@ fn fake_ball_follow_mouse(
 
 #[derive(Resource)]
 struct NextBallTimer(Timer);
+#[derive(Resource)]
+struct DebounceTimer(Timer);
 
 fn release_ball(
     mut next_ball_timer: ResMut<NextBallTimer>,
     mut fake_ball_q: Query<(Entity, &Position), With<FakeBall>>,
     mut commands: Commands,
     mouse: Res<Input<MouseButton>>,
+    mut touch_evr: EventReader<TouchInput>,
     ball_sizes: Res<BallSizes>,
     mut next_ball_state: ResMut<NextState<NextBallState>>,
     next_ball_size: Res<NextBallSize>,
@@ -605,7 +846,18 @@ fn release_ball(
     audio_handles: Res<AudioHandles>,
     sound_toggle: Res<SoundToggle>,
 ) {
-    if !mouse.just_pressed(MouseButton::Left) || fake_ball_q.is_empty() {
+    let mut touch_ended = false;
+
+    for touch in touch_evr.iter() {
+        if touch.phase != TouchPhase::Ended {
+            continue;
+        } else {
+            touch_ended = true;
+            break;
+        }
+    }
+
+    if !touch_ended && !mouse.just_pressed(MouseButton::Left) || fake_ball_q.is_empty() {
         return;
     }
 
@@ -678,7 +930,8 @@ fn tick_next_ball(
                 next_ball_size.0,
                 &ball_sizes,
             ))
-            .insert((RigidBody::Static, FakeBall)); // TODO: remove collision from fake ball
+            .insert(FakeBall)
+            .insert(RigidBody::Static); // TODO: remove collider
 
         return;
     }
@@ -695,6 +948,7 @@ fn cursor_to_world(
     q_window: Query<&Window>,
     // query to get camera transform
     q_camera: Query<(&Camera, &GlobalTransform)>,
+    mut touches_evr: EventReader<TouchInput>,
 ) {
     // get the camera info and transform
     // assuming there is exactly one main camera entity, so Query::single() is OK
@@ -711,6 +965,15 @@ fn cursor_to_world(
         .map(|ray| ray.origin.truncate())
     {
         pos.0 = world_position;
+    } else {
+        for touch in touches_evr.iter() {
+            if let Some(world_position) = camera
+                .viewport_to_world(camera_transform, touch.position)
+                .map(|ray| ray.origin.truncate())
+            {
+                pos.0 = world_position;
+            }
+        }
     }
 }
 

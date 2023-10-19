@@ -9,4 +9,3 @@ edition = "2021"
 bevy = "0.11.3"
 bevy_xpbd_2d = "0.2.0"
 fastrand = { version = "2.0.1", features = ["js"] }
-

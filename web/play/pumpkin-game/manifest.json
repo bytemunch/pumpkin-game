@@ -1,0 +1,42 @@
+{
+  "theme_color": "#ff6600",
+  "background_color": "#151515",
+  "icons": [
+    {
+      "purpose": "maskable",
+      "sizes": "512x512",
+      "src": "./icons/icon512_maskable.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "any",
+      "sizes": "512x512",
+      "src": "./icons/icon-512x512.png",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-256x256.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png"
+    }
+  ],
+  "orientation": "portrait",
+  "display": "standalone",
+  "dir": "auto",
+  "lang": "en-GB",
+  "name": "Pumpkin Game",
+  "short_name": "Pumpkin!",
+  "start_url": "/play/pumpkin-game/index.html",
+  "scope": "/play/pumpkin-game/",
+  "description": "Merge the spooky balls, try to make a pumpkin!"
+}

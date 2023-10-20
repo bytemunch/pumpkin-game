@@ -1,5 +1,11 @@
 Hiscore (local)
 
-UI scaling for HiDPI
+PWA
 
-Mobile Audio broken (upstream?)
+Preload
+
+Loading screen
+
+Scale images for screen size (perf)
+
+Scale UI for screen size (cosmetic)

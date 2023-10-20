@@ -428,7 +428,10 @@ fn build_running(
     font: Res<CustomFont>,
     bgm_q: Query<&AudioSink, With<MusicTag>>,
     bgm_toggle: Res<MusicToggle>,
+    mut next_ball_timer: ResMut<NextBallTimer>,
 ) {
+    next_ball_timer.0.reset();
+
     score.0 = 0;
 
     if let Ok(sink) = bgm_q.get_single() {

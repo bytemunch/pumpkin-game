@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::f32::{consts::PI, INFINITY};
 
 use bevy::{
     audio::{PlaybackMode, Volume, VolumeLevel},
@@ -42,6 +42,7 @@ const BALL_ORDER: &'static [&'static str] = &[
     "skull",
     "pumpkin",
 ];
+
 fn main() {
     App::new()
         .add_plugins((
@@ -62,6 +63,7 @@ fn main() {
             Update,
             (
                 (
+                    set_ball_sizes,
                     fake_ball_follow_mouse,
                     cursor_to_world,
                     release_ball,
@@ -72,6 +74,9 @@ fn main() {
                     update_next_up,
                     check_over_top,
                     enter_gameover,
+                    change_quality,
+                    adaptive_quality,
+                    spawn_ball,
                 )
                     .run_if(in_state(GameState::Running)),
                 enter_running.run_if(in_state(GameState::Splash)),
@@ -82,6 +87,7 @@ fn main() {
                 set_scale_from_window,
                 play_button,
                 tick_debounce,
+                get_framerate,
             ),
         )
         .add_systems(OnEnter(GameState::Splash), build_splash)
@@ -101,11 +107,15 @@ fn main() {
         .init_resource::<NextNextBallSize>()
         .init_resource::<Score>()
         .init_resource::<Multiplier>()
+        .init_resource::<BallSizes>()
+        .init_resource::<Framerate>()
+        .init_resource::<AdaptiveQualityTimer>()
         .insert_resource(NextBallTimer(Timer::from_seconds(0.5, TimerMode::Once)))
         .insert_resource(DebounceTimer(Timer::from_seconds(0.3, TimerMode::Once)))
         .add_state::<AppState>()
         .add_state::<GameState>()
         .add_state::<NextBallState>()
+        .add_event::<SpawnBallEvent>()
         .run();
 }
 
@@ -154,6 +164,18 @@ fn enter_gameover(keys: Res<Input<KeyCode>>, mut next_state: ResMut<NextState<Ga
     }
 }
 
+fn change_quality(keys: Res<Input<KeyCode>>, mut quality: ResMut<Quality>) {
+    if keys.just_pressed(KeyCode::Q) {
+        quality.0 = match quality.0 {
+            32 => 64,
+            64 => 128,
+            128 => 256,
+            256 => 512,
+            _ => 32,
+        }
+    }
+}
+
 #[derive(Component)]
 struct MusicTag;
 
@@ -164,7 +186,16 @@ struct MusicToggle(bool);
 struct SoundToggle(bool);
 
 #[derive(Resource)]
-struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>, Handle<Image>)>);
+struct BallSizes(Vec<(f32, Handle<Mesh>, Handle<ColorMaterial>)>);
+
+impl Default for BallSizes {
+    fn default() -> Self {
+        BallSizes(vec![
+            (0.0, Handle::default(), Handle::default(),);
+            SIZE_COUNT
+        ])
+    }
+}
 
 #[derive(Resource)]
 struct AudioHandles {
@@ -423,12 +454,13 @@ fn sfx_button(
 fn build_running(
     mut score: ResMut<Score>,
     mut commands: Commands,
-    ball_sizes: Res<BallSizes>,
     next_ball_size: Res<NextBallSize>,
     font: Res<CustomFont>,
     bgm_q: Query<&AudioSink, With<MusicTag>>,
     bgm_toggle: Res<MusicToggle>,
     mut next_ball_timer: ResMut<NextBallTimer>,
+    ball_images: Res<BallImageHandles>,
+    quality: Res<Quality>,
 ) {
     next_ball_timer.0.reset();
 
@@ -509,7 +541,9 @@ fn build_running(
                             },
                             ..default()
                         },
-                        UiImage::new(ball_sizes.0[next_ball_size.0].3.clone_weak()),
+                        UiImage::new(
+                            ball_images.0[q_idx(quality.0)].0[next_ball_size.0].clone_weak(),
+                        ),
                         NextUpTag,
                     ));
                 });
@@ -521,17 +555,18 @@ struct NextUpTag;
 
 fn update_next_up(
     next_q: Query<Entity, With<NextUpTag>>,
-    next_next_ball_size: Res<NextNextBallSize>,
-    ball_sizes: Res<BallSizes>,
+    next_ball_size: Res<NextNextBallSize>,
     mut commands: Commands,
+    ball_images: Res<BallImageHandles>,
+    quality: Res<Quality>,
 ) {
-    if !next_next_ball_size.is_changed() {
+    if !next_ball_size.is_changed() {
         return;
     }
 
     if let Ok(entity) = next_q.get_single() {
         commands.entity(entity).insert(UiImage::new(
-            ball_sizes.0[next_next_ball_size.0].3.clone_weak(),
+            ball_images.0[q_idx(quality.0)].0[next_ball_size.0].clone_weak(),
         ));
     }
 }
@@ -658,25 +693,73 @@ fn build_gameover(
         .insert(KillMeTimer(Timer::from_seconds(0.9, TimerMode::Once)));
 }
 
-fn setup(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    asset_server: Res<AssetServer>,
+#[derive(Resource)]
+struct Quality(usize);
+
+#[derive(Resource, Default)]
+struct Framerate(f32);
+
+const FRAME_SMOOTHING: f32 = 0.99;
+
+fn get_framerate(mut framerate: ResMut<Framerate>, time: Res<Time>) {
+    let mut current = 1.0 / time.delta().as_secs_f32();
+
+    if current == INFINITY {
+        current = 1.0;
+    }
+
+    framerate.0 = (framerate.0 * FRAME_SMOOTHING) + (current * (1.0 - FRAME_SMOOTHING));
+
+    //web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+    //    format!("CFR: {} | FR: {}", current, framerate.0).as_str(),
+    //));
+}
+
+#[derive(Resource)]
+struct AdaptiveQualityTimer(Timer);
+
+impl Default for AdaptiveQualityTimer {
+    fn default() -> Self {
+        AdaptiveQualityTimer(Timer::from_seconds(5.0, TimerMode::Once))
+    }
+}
+
+fn adaptive_quality(
+    mut quality: ResMut<Quality>,
+    frames: Res<Framerate>,
+    mut debounce: ResMut<AdaptiveQualityTimer>,
+    time: Res<Time>,
 ) {
-    commands.insert_resource(ClearColor(Color::rgb_u8(52, 52, 52)));
+    debounce.0.tick(time.delta());
 
-    commands.spawn(Camera2dBundle {
-        projection: OrthographicProjection {
-            near: -1.0,
-            far: 1000.0,
-            scale: 0.01,
-            ..default()
-        },
-        ..default()
-    });
+    if !(debounce.0.finished()) {
+        return;
+    }
 
-    let mut ball_sizes = vec![];
+    if frames.0 >= 59.0 && quality.0 < 512 {
+        quality.0 <<= 1;
+        debounce.0.reset();
+    }
+
+    if frames.0 <= 45.0 && quality.0 > 32 {
+        quality.0 >>= 1;
+        debounce.0.reset();
+    }
+}
+
+fn set_ball_sizes(
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut ball_sizes: ResMut<BallSizes>,
+    quality: Res<Quality>,
+    mut ball_q: Query<(&BallSize, &mut Handle<Image>)>,
+    mut next_up_q: Query<&mut UiImage, With<NextUpTag>>,
+    next_up: Res<NextBallSize>,
+    ball_images: Res<BallImageHandles>,
+) {
+    if !quality.is_changed() && !quality.is_added() {
+        return;
+    }
 
     for i in 1..=SIZE_COUNT {
         let radius = lerp(
@@ -692,12 +775,59 @@ fn setup(
             0.0, // DEBUG:  remove this line to see collider
         )));
 
-        let img = asset_server.load(format!("{}.png", BALL_ORDER[i - 1]));
-
-        ball_sizes.push((radius, mesh, mat, img));
+        ball_sizes.0[i - 1] = (radius, mesh, mat);
     }
 
-    commands.insert_resource(BallSizes(ball_sizes));
+    for (size, mut img) in ball_q.iter_mut() {
+        *img = ball_images.0[q_idx(quality.0)].0[size.0].clone_weak();
+    }
+
+    for mut img in next_up_q.iter_mut() {
+        img.texture = ball_images.0[q_idx(quality.0)].0[next_up.0].clone_weak();
+    }
+}
+
+// TODO: this on impl Quality
+fn q_idx(i: usize) -> usize {
+    (i.ilog2() - 5) as usize
+}
+
+/// quality then size
+#[derive(Clone)]
+struct BallImageHandleList(Vec<Handle<Image>>);
+
+/// quality then size
+#[derive(Resource)]
+struct BallImageHandles(Vec<BallImageHandleList>);
+
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let mut image_handles = vec![BallImageHandleList(vec![Handle::default(); SIZE_COUNT - 1]); 5];
+
+    for i in 5..=9 {
+        let quality = 2usize.pow(i);
+        let idx = i as usize - 5;
+        for j in 0..SIZE_COUNT - 1 {
+            let name = BALL_ORDER[j];
+            image_handles[idx].0[j] = asset_server.load(format!("{}@{}.png", name, quality));
+        }
+    }
+
+    commands.insert_resource(BallImageHandles(image_handles));
+
+    commands.insert_resource(ClearColor(Color::rgb_u8(52, 52, 52)));
+
+    commands.insert_resource(Quality(512)); //start at max quality, drop as needed
+
+    commands.spawn(Camera2dBundle {
+        projection: OrthographicProjection {
+            near: -1.0,
+            far: 1000.0,
+            scale: 0.01,
+            ..default()
+        },
+        ..default()
+    });
+
     commands.insert_resource(CustomFont(asset_server.load("Creepster-Regular.ttf")));
 
     // Audio
@@ -820,14 +950,14 @@ fn add_walls(mut commands: Commands) {
 struct FakeBall;
 
 fn fake_ball_follow_mouse(
-    mut fake_ball_q: Query<(&mut Position, &BallSize), With<FakeBall>>,
+    mut fake_ball_q: Query<(&mut Transform, &BallSize), With<FakeBall>>,
     cursor: Res<CursorWorldPos>,
     ball_sizes: Res<BallSizes>,
 ) {
-    if let Ok((mut pos, size)) = fake_ball_q.get_single_mut() {
+    if let Ok((mut transform, size)) = fake_ball_q.get_single_mut() {
         let max = BOX_WIDTH / 2.0 - ball_sizes.0[size.0].0 - 0.5; // wall_thickness
         let min = -BOX_WIDTH / 2.0 + ball_sizes.0[size.0].0 + 0.5;
-        pos.x = cursor.0.x.clamp(min, max);
+        transform.translation.x = cursor.0.x.clamp(min, max);
     }
 }
 
@@ -838,16 +968,16 @@ struct DebounceTimer(Timer);
 
 fn release_ball(
     mut next_ball_timer: ResMut<NextBallTimer>,
-    mut fake_ball_q: Query<(Entity, &Position), With<FakeBall>>,
+    mut fake_ball_q: Query<(Entity, &Transform), With<FakeBall>>,
     mut commands: Commands,
     mouse: Res<Input<MouseButton>>,
     mut touch_evr: EventReader<TouchInput>,
-    ball_sizes: Res<BallSizes>,
     mut next_ball_state: ResMut<NextState<NextBallState>>,
     next_ball_size: Res<NextBallSize>,
     mut multiplier: ResMut<Multiplier>,
     audio_handles: Res<AudioHandles>,
     sound_toggle: Res<SoundToggle>,
+    mut ew: EventWriter<SpawnBallEvent>,
 ) {
     let mut touch_ended = false;
 
@@ -872,9 +1002,12 @@ fn release_ball(
 
     if let Ok((entity, position)) = fake_ball_q.get_single_mut() {
         let av = -1.0 + fastrand::f32() * 2.0;
-        commands
-            .spawn(new_ball(position.0, size, &ball_sizes))
-            .insert(AngularVelocity(av)); // prevents perfect stacking
+
+        ew.send(SpawnBallEvent {
+            position: position.translation.truncate(),
+            size,
+            av,
+        });
 
         commands.entity(entity).despawn();
 
@@ -925,16 +1058,26 @@ fn tick_next_ball(
     fake_ball_q: Query<&FakeBall>,
     next_ball_size: Res<NextBallSize>,
     cursor: Res<CursorWorldPos>,
+    ball_images: Res<BallImageHandles>,
+    quality: Res<Quality>,
 ) {
     if next_ball_timer.0.finished() && fake_ball_q.is_empty() {
-        commands
-            .spawn(new_ball(
-                Vec2::new(cursor.0.x, DROP_LINE),
-                next_ball_size.0,
-                &ball_sizes,
-            ))
-            .insert(FakeBall)
-            .insert(RigidBody::Static); // TODO: remove collider
+        let radius = ball_sizes.0[next_ball_size.0].0;
+
+        commands.spawn((
+            FakeBall,
+            BallSize(next_ball_size.0),
+            RunningTag,
+            SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(Vec2::splat(radius * 2.0)),
+                    ..default()
+                },
+                transform: Transform::from_xyz(cursor.0.x, DROP_LINE, 0.0),
+                texture: ball_images.0[q_idx(quality.0)].0[next_ball_size.0].clone_weak(),
+                ..default()
+            },
+        ));
 
         return;
     }
@@ -992,6 +1135,7 @@ fn merge_on_collision(
     mut multiplier: ResMut<Multiplier>,
     audio_handles: Res<AudioHandles>,
     sound_toggle: Res<SoundToggle>,
+    mut ew: EventWriter<SpawnBallEvent>,
 ) {
     for Collision(contact) in collision_event_reader.iter() {
         // Check BallSize component on entities. If present and equal, remove the two contacting
@@ -1021,9 +1165,7 @@ fn merge_on_collision(
 
                     let position = (pos1.0 + pos2.0) / 2.0;
 
-                    commands
-                        .spawn(new_ball(position, size, &ball_sizes))
-                        .insert(AngularVelocity(av));
+                    ew.send(SpawnBallEvent { position, size, av });
 
                     commands.entity(entity1).despawn();
                     commands.entity(entity2).despawn();
@@ -1047,54 +1189,49 @@ fn merge_on_collision(
     }
 }
 
-fn new_ball(
-    pos: Vec2,
+#[derive(Event)]
+struct SpawnBallEvent {
+    position: Vec2,
     size: usize,
-    ball_sizes: &BallSizes,
-) -> (
-    RigidBody,
-    Collider,
-    MaterialMesh2dBundle<ColorMaterial>,
-    Position,
-    LinearDamping,
-    AngularDamping,
-    BallSize,
-    Friction,
-    RunningTag,
-    SettleTimer,
-    Restitution,
-    Handle<Image>,
-    Sprite,
+    av: f32,
+}
+
+fn spawn_ball(
+    mut er: EventReader<SpawnBallEvent>,
+    ball_images: Res<BallImageHandles>,
+    ball_sizes: Res<BallSizes>,
+    quality: Res<Quality>,
+    mut commands: Commands,
 ) {
-    let radius = ball_sizes.0[size].0;
-    let matmesh = MaterialMesh2dBundle {
-        mesh: ball_sizes.0[size].1.clone_weak().into(),
-        material: ball_sizes.0[size].2.clone_weak(),
-        transform: Transform::from_scale(Vec3::new(
-            (2.1 / 512.0) * radius,
-            (2.1 / 512.0) * radius,
-            1.0,
-        )),
-        ..default()
-    };
-    (
-        RigidBody::Dynamic,
-        Collider::ball(radius),
-        matmesh,
-        Position(pos),
-        LinearDamping(LINEAR_DAMPING),
-        AngularDamping(ANGULAR_DAMPING),
-        BallSize(size),
-        Friction::new(FRICTION),
-        RunningTag,
-        SettleTimer(Timer::from_seconds(OVERTOP_TIMER, TimerMode::Once)),
-        Restitution::new(RESTITUTION),
-        ball_sizes.0[size].3.clone_weak(),
-        Sprite {
-            //custom_size: Some(Vec2::splat(radius * 2.0)),
+    for ev in er.iter() {
+        let radius = ball_sizes.0[ev.size].0;
+
+        let matmesh = MaterialMesh2dBundle {
+            mesh: ball_sizes.0[ev.size].1.clone_weak().into(),
+            material: ball_sizes.0[ev.size].2.clone_weak(),
             ..default()
-        },
-    )
+        };
+
+        commands.spawn((
+            RigidBody::Dynamic,
+            Collider::ball(radius),
+            matmesh,
+            Position(ev.position),
+            LinearDamping(LINEAR_DAMPING),
+            AngularDamping(ANGULAR_DAMPING),
+            BallSize(ev.size),
+            Friction::new(FRICTION),
+            RunningTag,
+            SettleTimer(Timer::from_seconds(OVERTOP_TIMER, TimerMode::Once)),
+            Restitution::new(RESTITUTION),
+            ball_images.0[q_idx(quality.0)].0[ev.size].clone_weak(),
+            AngularVelocity(ev.av),
+            Sprite {
+                custom_size: Some(Vec2::splat(radius * 2.0)),
+                ..default()
+            },
+        ));
+    }
 }
 
 #[derive(Resource, Default)]

@@ -10,7 +10,6 @@ use bevy::{
 use bevy_xpbd_2d::prelude::*;
 
 const DROP_LINE: f32 = 3.0;
-const SIZE_COUNT: usize = 11;
 
 const BOX_WIDTH: f32 = 4.4;
 const BOX_HEIGHT: f32 = 5.0;
@@ -192,7 +191,7 @@ impl Default for BallSizes {
     fn default() -> Self {
         BallSizes(vec![
             (0.0, Handle::default(), Handle::default(),);
-            SIZE_COUNT
+            BALL_ORDER.len()
         ])
     }
 }
@@ -761,17 +760,17 @@ fn set_ball_sizes(
         return;
     }
 
-    for i in 1..=SIZE_COUNT {
+    for i in 1..=BALL_ORDER.len() {
         let radius = lerp(
             MIN_RADIUS,
             MAX_RADIUS,
-            ease_in_sine(i as f32 / SIZE_COUNT as f32),
+            ease_in_sine(i as f32 / BALL_ORDER.len() as f32),
         );
         let mesh = meshes.add(shape::Circle::new(radius).into());
         let mat = materials.add(ColorMaterial::from(Color::rgba(
             0.5,
             0.5,
-            i as f32 / SIZE_COUNT as f32,
+            i as f32 / BALL_ORDER.len() as f32,
             0.0, // DEBUG:  remove this line to see collider
         )));
 
@@ -801,12 +800,12 @@ struct BallImageHandleList(Vec<Handle<Image>>);
 struct BallImageHandles(Vec<BallImageHandleList>);
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let mut image_handles = vec![BallImageHandleList(vec![Handle::default(); SIZE_COUNT - 1]); 5];
+    let mut image_handles = vec![BallImageHandleList(vec![Handle::default(); BALL_ORDER.len()]); 5];
 
     for i in 5..=9 {
         let quality = 2usize.pow(i);
         let idx = i as usize - 5;
-        for j in 0..SIZE_COUNT - 1 {
+        for j in 0..BALL_ORDER.len() {
             let name = BALL_ORDER[j];
             image_handles[idx].0[j] = asset_server.load(format!("{}@{}.png", name, quality));
         }
@@ -1017,7 +1016,7 @@ fn release_ball(
             return;
         }
 
-        let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
+        let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / BALL_ORDER.len() as f32));
         commands
             .spawn(AudioBundle {
                 source: audio_handles.drop.clone_weak(),
@@ -1173,7 +1172,7 @@ fn merge_on_collision(
                     if !sound_toggle.0 {
                         return;
                     }
-                    let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / SIZE_COUNT as f32));
+                    let speed = lerp(0.2, 1.2, 1.0 - (size as f32 / BALL_ORDER.len() as f32));
                     commands
                         .spawn(AudioBundle {
                             source: audio_handles.merge.clone_weak(),
@@ -1236,8 +1235,15 @@ fn spawn_ball(
 
 #[derive(Resource, Default)]
 struct NextBallSize(usize);
-#[derive(Resource, Default)]
+
+#[derive(Resource)]
 struct NextNextBallSize(usize);
+
+impl Default for NextNextBallSize {
+    fn default() -> Self {
+        Self(fastrand::usize(..3))
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, States, Default)]
 enum NextBallState {
@@ -1251,7 +1257,7 @@ fn set_next_size(
     mut next_next_size: ResMut<NextNextBallSize>,
     mut next_state: ResMut<NextState<NextBallState>>,
 ) {
-    let x: usize = fastrand::usize(..SIZE_COUNT / 2); //rng.gen_range(0..SIZE_COUNT / 2);
+    let x: usize = fastrand::usize(..BALL_ORDER.len() / 2); //rng.gen_range(0..SIZE_COUNT / 2);
     next_size.0 = next_next_size.0;
     next_next_size.0 = x;
     next_state.0 = Some(NextBallState::Selected);
